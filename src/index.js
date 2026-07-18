@@ -30,10 +30,7 @@ export default {
                         '/record &lt;url&gt; &lt;durasi&gt; — Process media\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; --referer &lt;url&gt; — Process with referer\n' +
                         '/status — Cek status\n' +
-                        '/cancel — Batalkan proses\n' +
-                        '/list — Daftar file di R2\n' +
-                        '/dl &lt;filename&gt; — Download file dari R2\n' +
-                        '/del &lt;filename&gt; — Hapus file dari R2\n\n' +
+                        '/cancel — Batalkan proses\n\n' +
                         '<b>Format durasi:</b>\n' +
                         '  300 / 300s → 300 detik\n' +
                         '  5m → 5 menit\n' +
@@ -58,12 +55,6 @@ export default {
           ctx.waitUntil(handleStatus(chatId, env));
         } else if (text === '/cancel') {
           ctx.waitUntil(handleCancel(chatId, env));
-        } else if (text === '/list') {
-          ctx.waitUntil(handleList(chatId, env));
-        } else if (text.startsWith('/dl ')) {
-          ctx.waitUntil(handleDownload(text, chatId, env));
-        } else if (text.startsWith('/del ')) {
-          ctx.waitUntil(handleDelete(text, chatId, env));
         } else if (text.startsWith('/')) {
           ctx.waitUntil(sendMessage(env.BOT_TOKEN, chatId,
             '❓ Command tidak dikenali.\nKetik /start untuk melihat daftar command.'
@@ -169,7 +160,7 @@ async function handleRecord(text, chatId, env) {
       `⏱ Durasi: ${formatDuration(duration)}\n` +
       `📦 File: ${filename}\n`;
     if (referer) msg += `🔗 Referer: <code>${escapeHtml(referer)}</code>\n`;
-    msg += '☁️ Hasil disimpan ke R2 setelah selesai.\n\nKetik /status untuk cek progress.';
+    msg += '☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nKetik /status untuk cek progress.';
     await sendMessage(env.BOT_TOKEN, chatId, msg);
   } else {
     const errText = await ghResp.text();
@@ -232,90 +223,6 @@ async function handleCancel(chatId, env) {
     }
 
     await sendMessage(env.BOT_TOKEN, chatId, `🚫 <b>${inProgress.length} rekaman dibatalkan.</b>`);
-  } catch (err) {
-    await sendMessage(env.BOT_TOKEN, chatId, `❌ Error: ${escapeHtml(err.message)}`);
-  }
-  return new Response('OK');
-}
-
-async function handleList(chatId, env) {
-  try {
-    const listed = await env.R2.list();
-    if (!listed.objects?.length) {
-      await sendMessage(env.BOT_TOKEN, chatId, '📭 R2 kosong. Belum ada file.');
-      return new Response('OK');
-    }
-
-    let msg = `📁 <b>R2 Files (${listed.objects.length}):</b>\n\n`;
-    for (const obj of listed.objects) {
-      const sizeMB = (obj.size / (1024 * 1024)).toFixed(1);
-      const uploaded = new Date(obj.uploaded).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-      msg += `📄 <code>${obj.key}</code>\n   ${sizeMB} MB — ${uploaded}\n\n`;
-    }
-
-    // Split if too long (Telegram limit 4096)
-    if (msg.length > 4000) {
-      const parts = splitMessage(msg, 4000);
-      for (const part of parts) await sendMessage(env.BOT_TOKEN, chatId, part);
-    } else {
-      await sendMessage(env.BOT_TOKEN, chatId, msg);
-    }
-  } catch (err) {
-    await sendMessage(env.BOT_TOKEN, chatId, `❌ Error: ${escapeHtml(err.message)}`);
-  }
-  return new Response('OK');
-}
-
-async function handleDownload(text, chatId, env) {
-  const filename = text.slice(4).trim();
-  if (!filename) {
-    await sendMessage(env.BOT_TOKEN, chatId, '❌ Format: /dl &lt;filename&gt;\nKetik /list untuk melihat file.');
-    return new Response('OK');
-  }
-
-  try {
-    const obj = await env.R2.get(filename);
-    if (!obj) {
-      await sendMessage(env.BOT_TOKEN, chatId, `❌ File "${filename}" tidak ditemukan.`);
-      return new Response('OK');
-    }
-
-    const blob = await obj.arrayBuffer();
-    const resp = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        document: `data:video/mp4;base64,${btoa(String.fromCharCode(...new Uint8Array(blob)))}`,
-        caption: `📦 ${filename} (${(blob.byteLength / (1024 * 1024)).toFixed(1)} MB)`
-      })
-    });
-
-    if (!resp.ok) {
-      const err = await resp.json();
-      // Fallback: send as R2 presigned URL or just info
-      await sendMessage(env.BOT_TOKEN, chatId,
-        `📄 <b>${filename}</b>\n` +
-        `📦 Size: ${(blob.byteLength / (1024 * 1024)).toFixed(1)} MB\n\n` +
-        `⚠️ File terlalu besar untuk dikirim langsung.\nGunakan API R2 untuk download.`
-      );
-    }
-  } catch (err) {
-    await sendMessage(env.BOT_TOKEN, chatId, `❌ Error: ${escapeHtml(err.message)}`);
-  }
-  return new Response('OK');
-}
-
-async function handleDelete(text, chatId, env) {
-  const filename = text.slice(5).trim();
-  if (!filename) {
-    await sendMessage(env.BOT_TOKEN, chatId, '❌ Format: /del &lt;filename&gt;\nKetik /list untuk melihat file.');
-    return new Response('OK');
-  }
-
-  try {
-    await env.R2.delete(filename);
-    await sendMessage(env.BOT_TOKEN, chatId, `🗑 File "${filename}" dihapus dari R2.`);
   } catch (err) {
     await sendMessage(env.BOT_TOKEN, chatId, `❌ Error: ${escapeHtml(err.message)}`);
   }

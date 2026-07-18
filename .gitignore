@@ -8,4 +8,7 @@ check_auth.py
 set_gh_secrets.py
 setup_r2.py
 
+# build/cache
+__pycache__/
 .wrangler/
+worker-configuration.d.ts

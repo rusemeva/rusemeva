@@ -234,9 +234,39 @@ elif job_status == "cancelled":
         f"🔗 Run: {run_url}"
     )
 else:
+    # --- Ambil tail log GH run biar owner tahu KENAPA gagal ---
+    run_log = ""
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["gh", "api", f"repos/{repo}/actions/runs/{run_id}/logs",
+             "--header", "Accept: application/vnd.github+json",
+             "-o", "/tmp/orvella_run.log.zip"],
+            capture_output=True, text=True, timeout=60)
+        if out.returncode == 0:
+            import zipfile
+            with zipfile.ZipFile("/tmp/orvella_run.log.zip") as z:
+                # gabungkan semua log step, ambil 1500 char terakhir
+                full = ""
+                for n in z.namelist():
+                    full += z.read(n).decode("utf-8", "replace") + "\n"
+                run_log = full[-1500:]
+    except Exception as e:
+        run_log = f"(gagal ambil log: {e})"
+    # fallback tail log dari artifact jika zip gagal
+    if not run_log:
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["gh", "run", "view", run_id, "--log", "--repo", repo],
+                capture_output=True, text=True, timeout=60)
+            run_log = (out.stdout or out.stderr)[-1500:]
+        except Exception:
+            run_log = ""
+    log_block = f"\n\n📜 <b>Log tail:</b>\n<pre>{run_log.strip()[-1200:]}</pre>" if run_log.strip() else ""
     send_message(
         f"❌ <b>Rekaman gagal.</b>\n\n"
         f"📦 File: <code>{filename}</code>\n"
         f"ℹ️ Sistem sudah mencoba ulang otomatis hingga 3x.\n"
-        f"🔗 Cek log: {run_url}"
+        f"🔗 Cek log: {run_url}{log_block}"
     )

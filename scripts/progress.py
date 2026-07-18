@@ -7,6 +7,8 @@ API = "{}/bot{}".format(
 CHAT = os.environ.get("CHAT_ID", "")
 MSG_FILE = os.environ.get("PROGRESS_MSG_FILE", "/tmp/orvella_progress_msg_id")
 FILENAME = os.environ.get("FILENAME", "")
+# Label fase: "Rekam" atau "Encoding HEVC 10-bit" (default HEVC biar kompatibel)
+PHASE_LABEL = os.environ.get("PHASE_LABEL", "Encoding HEVC 10-bit")
 
 
 def req(method, payload):
@@ -50,14 +52,16 @@ def build_bar(pct):
 
 
 if len(sys.argv) < 2:
-    print("usage: progress.py start|progress N|done [text]")
+    print("usage: progress.py start|progress N|done|fail [text]")
     sys.exit(1)
 
 mode = sys.argv[1]
 
+ICON = "🔄" if mode in ("start", "progress") else "✅"
+
 if mode == "start":
-    text = "🔄 <b>Encoding HEVC 10-bit</b>\n\n{} 0%\n📦 <code>{}</code>".format(
-        build_bar(0), FILENAME)
+    text = "{} <b>{}</b>\n\n{} 0%\n📦 <code>{}</code>".format(
+        ICON, PHASE_LABEL, build_bar(0), FILENAME)
     r = req("sendMessage", {"chat_id": CHAT, "text": text, "parse_mode": "HTML"})
     mid = r.get("result", {}).get("message_id")
     if mid:
@@ -66,12 +70,18 @@ if mode == "start":
 
 elif mode == "progress":
     pct = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-    text = "🔄 <b>Encoding HEVC 10-bit</b>\n\n{} {}%\n📦 <code>{}</code>".format(
-        build_bar(pct), pct, FILENAME)
+    text = "{} <b>{}</b>\n\n{} {}%\n📦 <code>{}</code>".format(
+        ICON, PHASE_LABEL, build_bar(pct), pct, FILENAME)
     edit(text)
 
 elif mode == "done":
-    text = sys.argv[2].replace("\\n", "\n") if len(sys.argv) > 2 else "✅ <b>Encode HEVC 10-bit selesai!</b>\n\n⬆️ Mengupload ke release..."
+    text = sys.argv[2].replace("\\n", "\n") if len(sys.argv) > 2 else \
+        "✅ <b>{} selesai!</b>\n\n⬆️ Mengupload ke release...".format(PHASE_LABEL)
+    edit(text)
+
+elif mode == "fail":
+    text = sys.argv[2].replace("\\n", "\n") if len(sys.argv) > 2 else \
+        "❌ <b>{} gagal.</b>\n\n🔗 Cek log run.".format(PHASE_LABEL)
     edit(text)
 
 else:

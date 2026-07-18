@@ -156,6 +156,7 @@ jobs:
             -movflags +faststart
             -max_muxing_queue_size 1024
             -t ${{ steps.inputs.outputs.duration }}
+            -progress pipe:1
             "$FILE")
 
           # ---- Auto-retry loop ----
@@ -164,17 +165,49 @@ jobs:
           ATTEMPT=1
           SUCCESS=0
 
+          # Durasi request untuk progress bar rekam (kayak HEVC step)
+          SRC_DUR_INT="${{ steps.inputs.outputs.duration }}"
+          [ "$SRC_DUR_INT" -le 0 ] 2>/dev/null && SRC_DUR_INT=60
+
           while [ $ATTEMPT -le $MAX_RETRIES ]; do
             echo "──────────────────────────────────────"
             echo "🎬 Recording attempt ${ATTEMPT}/${MAX_RETRIES}"
             echo "──────────────────────────────────────"
 
             rm -f "$FILE"
+            # Mulai 1 pesan progress rekam (edit-message, bukan spam)
+            CHAT_ID="${{ steps.inputs.outputs.chat_id }}" FILENAME="$FILE" \
+              TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
+              BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
+              PHASE_LABEL=Rekam \
+              PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
+              python3 scripts/progress.py start 2>/dev/null || true
             set +e
             # `timeout` = backstop keras: bunuh ffmpeg (SIGTERM, lalu SIGKILL +30s)
             # kalau -t / -timelimit gagal stop di live stream. File tetap valid
             # karena step sukses dicek dari ukuran file, bukan exit code.
-            timeout -k 30 "$REC_WALL" ffmpeg "${FFMPEG_ARGS[@]}"
+            # -progress pipe:1 -> parse out_time_ms -> persen rekam real-time.
+            LAST_PCT=-1; NEXT_SEND=0
+            timeout -k 30 "$REC_WALL" ffmpeg "${FFMPEG_ARGS[@]}" 2>/dev/null | while IFS='=' read -r k v; do
+              if [ "$k" = "out_time_ms" ]; then
+                ms=${v%.*}
+                [ "$ms" -gt 0 ] 2>/dev/null || continue
+                cur=$(( ms / 1000000 ))
+                pct=$(( (cur * 100) / SRC_DUR_INT ))
+                [ "$pct" -gt 100 ] && pct=100
+                now=$(date +%s)
+                if [ "$pct" -ge "$((LAST_PCT + 10))" ] && [ "$now" -ge "$NEXT_SEND" ]; then
+                  LAST_PCT=$(( (pct / 10) * 10 ))
+                  NEXT_SEND=$(( now + 5 ))
+                  echo "🔴 Rekam ${LAST_PCT}%"
+                  CHAT_ID="${{ steps.inputs.outputs.chat_id }}" FILENAME="$FILE" \
+                    TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
+                    BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
+                    PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
+                    python3 scripts/progress.py progress "$LAST_PCT" 2>/dev/null || true
+                fi
+              fi
+            done
             FFMPEG_EXIT=$?
             set -e
 
@@ -195,6 +228,14 @@ jobs:
               else
                 echo "✅ Recording attempt ${ATTEMPT} sukses."
               fi
+              # Pastikan 100% lalu ubah jadi pesan final
+              echo "🔴 Rekam 100%"
+              CHAT_ID="${{ steps.inputs.outputs.chat_id }}" FILENAME="$FILE" \
+                TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
+                BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
+                PHASE_LABEL=Rekam \
+                PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
+                python3 scripts/progress.py done 2>/dev/null || true
               break
             fi
 
@@ -208,11 +249,21 @@ jobs:
 
           if [ "$SUCCESS" -ne 1 ]; then
             echo "❌ Semua ${MAX_RETRIES} percobaan gagal. Tidak ada file valid."
+            # Tandai progress rekam gagal
+            CHAT_ID="${{ steps.inputs.outputs.chat_id }}" FILENAME="$FILE" \
+              TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
+              BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
+              PHASE_LABEL=Rekam \
+              PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
+              python3 scripts/progress.py fail 2>/dev/null || true
             exit 1
           fi
 
           echo "✅ Recording complete!"
           ls -lh "$FILE"
+          # Export ukuran original untuk step segmentasi >2GB
+          echo "FILE_SIZE=$(ls -lh "$FILE" 2>/dev/null | awk '{print $5}')" >> $GITHUB_ENV
+          echo "ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || echo 0)" >> $GITHUB_ENV
 
       - name: Extract metadata and thumbnail
         id: meta
@@ -309,7 +360,42 @@ jobs:
             echo "HAS_THUMB=$HAS_THUMB"
           } >> $GITHUB_ENV
 
-      - name: Upload ORIGINAL ke GitHub Release (buat release)
+      - name: Segment ORIGINAL kalau >2GB (biar bisa dikirim utuh)
+        if: success()
+        run: |
+          FILE="${{ steps.fname.outputs.filename }}"
+          ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
+          if [ "${{ steps.inputs.outputs.simulate_over_2gb }}" = "true" ]; then
+            ORIG_BYTES=3221225472
+          fi
+          MAX=$((2*1024*1024*1024))
+          if [ "$ORIG_BYTES" -gt "$MAX" ]; then
+            echo "🧩 ORIGINAL $(numfmt --to=iec $ORIG_BYTES) > 2GB — pecah jadi segment <1.9GB"
+            SEG_DIR="segments"
+            rm -rf "$SEG_DIR"; mkdir -p "$SEG_DIR"
+            # -f segment: potong by size (~1.9GB), -c copy (tanpa re-encode)
+            ffmpeg -hide_banner -y -i "$FILE" \
+              -c copy -map 0 \
+              -f segment -segment_format mp4 \
+              -reset_timestamps 1 \
+              -fs 2000000000 \
+              "$SEG_DIR/part-%03d.mp4" 2>/dev/null || true
+            # verify ada segment
+            if ls "$SEG_DIR"/part-*.mp4 >/dev/null 2>&1; then
+              echo "SEGMENTED=1" >> $GITHUB_ENV
+              echo "SEG_DIR=$SEG_DIR" >> $GITHUB_ENV
+              echo "✅ Segment siap:"
+              ls -lh "$SEG_DIR"/part-*.mp4
+            else
+              echo "⚠️ Segment gagal, fallback kirim file utuh (maybe >2GB dilewati)"
+              echo "SEGMENTED=0" >> $GITHUB_ENV
+            fi
+          else
+            echo "✅ ORIGINAL $(numfmt --to=iec $ORIG_BYTES) ≤ 2GB, tidak perlu segment"
+            echo "SEGMENTED=0" >> $GITHUB_ENV
+          fi
+
+      - name: Buat .txt (update log kecil) + Release ringan
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -318,41 +404,67 @@ jobs:
           TAG="orvella-$(date +%s)"
           TITLE="Orvella Vault — $(date '+%Y-%m-%d %H:%M:%S') WIB (${{ steps.inputs.outputs.duration_label }})"
 
-          NOTES="Orvella Vault asset archive export
-
-          - File: ${FILE}
-          - Size: ${FILE_SIZE}
-          - Durasi: ${REAL_DURATION}
-          - Resolusi: ${RESOLUTION}
-          - Codec: ${VCODEC}
-          - Bitrate: ${VBITRATE}"
-
-          # Buat release dulu (biar HEVC bisa nempel walau original > 2GB)
-          gh release create "$TAG" --repo "${{ github.repository }}" \
-            --title "${TITLE}" --notes "${NOTES}" --draft=false 2>/dev/null || \
-          gh release create "$TAG" --repo "${{ github.repository }}" \
-            --title "${TITLE}" --notes "${NOTES}"
-          echo "✅ Created release $TAG"
-          echo "TAG=$TAG" >> $GITHUB_ENV
-
-          # Upload original cuma kalau ≤ 2GB (limit Bot API + GitHub)
-          ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
-          if [ "${{ steps.inputs.outputs.simulate_over_2gb }}" = "true" ]; then
-            echo "🧪 DEBUG simulate_over_2gb=true → paksa ORIG_BYTES > 2GB"
-            ORIG_BYTES=3221225472
-          fi
-          echo "ORIG_BYTES=$ORIG_BYTES" >> $GITHUB_ENV
-          MAX=$((2*1024*1024*1024))
-          if [ "$ORIG_BYTES" -le "$MAX" ]; then
-            ASSETS=("$FILE")
-            if [ "${HAS_THUMB}" = "1" ] && [ -s "${THUMB_FILE}" ]; then
-              ASSETS+=("${THUMB_FILE}")
+          # --- Extract URL segmen .ts dari playlist (bukan .m3u8) ---
+          M3U8="${{ steps.inputs.outputs.m3u8_url }}"
+          REF="${{ steps.inputs.outputs.referer }}"
+          resolve_url() {
+            b="$1"; r="$2"
+            case "$r" in
+              http*) echo "$r"; return ;;
+            esac
+            d="${b%/*}"
+            case "$r" in
+              /*) sh=$(echo "$b" | sed -E 's#^(https?://[^/]+).*#\1#'); echo "$sh$r" ;;
+              *) echo "$d/$r" ;;
+            esac
+          }
+          fetch_h() {
+            if [ -n "$REF" ]; then
+              curl -s -L -H "Referer: $REF" -H "User-Agent: Mozilla/5.0" "$1"
+            else
+              curl -s -L -H "User-Agent: Mozilla/5.0" "$1"
             fi
-            gh release upload "$TAG" "${ASSETS[@]}" --repo "${{ github.repository }}"
-            echo "✅ Uploaded ORIGINAL ($(numfmt --to=iec $ORIG_BYTES)) ke release $TAG"
-          else
-            echo "⚠️ ORIGINAL $(numfmt --to=iec $ORIG_BYTES) > 2GB — dilewati upload (HEVC tetap diupload)"
+          }
+          PL=$(fetch_h "$M3U8")
+          VAR=$(echo "$PL" | grep -E '\.m3u8' | head -1)
+          if [ -n "$VAR" ] && [ "$VAR" != "$M3U8" ]; then
+            PL=$(fetch_h "$(resolve_url "$M3U8" "$VAR")")
           fi
+          TSLINE=$(echo "$PL" | grep -E '\.ts' | head -1)
+          if [ -n "$TSLINE" ]; then
+            TS_URL="$(resolve_url "$M3U8" "$TSLINE")"
+          else
+            TS_URL="$M3U8"
+          fi
+          echo "TS_URL=$TS_URL" >> $GITHUB_ENV
+
+          # .txt = file kecil berisi metadata + URL sumber (.ts) — bukan video
+          TXT="${FILE%.mp4}.txt"
+          {
+            echo "# Orvella Vault — record update"
+            echo "file: ${FILE}"
+            echo "size: ${FILE_SIZE}"
+            echo "durasi: ${REAL_DURATION}"
+            echo "resolusi: ${RESOLUTION}"
+            echo "codec: ${VCODEC}"
+            echo "bitrate: ${VBITRATE}"
+            echo "source_url: $TS_URL"
+            echo "referer: ${{ steps.inputs.outputs.referer }}"
+            echo "status: sent-to-telegram"
+            echo "recorded_at: $(date '+%Y-%m-%dT%H:%M:%S %z')"
+          } > "$TXT"
+
+          NOTES="Orvella Vault — record update (lightweight log). Metadata + URL sumber disimpan, video dikirim ke Telegram (tidak disimpan di GitHub)."
+
+          # Release cuma berisi .txt (kecil, persist sebagai update log)
+          gh release create "$TAG" --repo "${{ github.repository }}" \
+            --title "${TITLE}" --notes "${NOTES}" \
+            "$TXT" 2>/dev/null || \
+          gh release create "$TAG" --repo "${{ github.repository }}" \
+            --title "${TITLE}" --notes "${NOTES}" "$TXT"
+          echo "✅ Created release $TAG (asset: $(ls -lh "$TXT" | awk '{print $5}') .txt)"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "TXT_FILE=$TXT" >> $GITHUB_ENV
 
       - name: Start local Bot API Server (allow >50MB uploads)
         if: success()
@@ -391,6 +503,7 @@ jobs:
         continue-on-error: true
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           CHAT_ID: ${{ steps.inputs.outputs.chat_id }}
           FILENAME: ${{ steps.fname.outputs.filename }}
           HUMAN_DUR: ${{ steps.inputs.outputs.human_duration }}
@@ -414,6 +527,7 @@ jobs:
         continue-on-error: true
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           CHAT_ID: ${{ steps.inputs.outputs.chat_id }}
           FILENAME: ${{ steps.fname.outputs.filename }}
           DURATION_SEC: ${{ steps.inputs.outputs.duration }}
@@ -510,25 +624,6 @@ jobs:
             echo "⚠️  Encode HEVC gagal, dilewati (file asli tetap diupload)."
           fi
 
-      - name: Upload HEVC ke release yang SAMA
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          HEVC_FILE="${{ env.HEVC_FILE }}"
-          TAG="${{ env.TAG }}"
-          if [ -n "$HEVC_FILE" ] && [ -s "$HEVC_FILE" ]; then
-            UPLOAD_ASSETS=("$HEVC_FILE")
-            if [ "${{ env.HAS_HEVC_THUMB }}" = "1" ] && [ -s "${{ env.HEVC_THUMB_FILE }}" ]; then
-              UPLOAD_ASSETS+=("${{ env.HEVC_THUMB_FILE }}")
-            fi
-            gh release upload "$TAG" "${UPLOAD_ASSETS[@]}" \
-              --repo "${{ github.repository }}"
-            echo "✅ Uploaded HEVC ke release $TAG (tetap 1 asset bundle)"
-          else
-            echo "⚠️  HEVC tidak ada, lewati upload."
-          fi
-
       - name: Notify Telegram — HEVC 10-bit (encode selesai)
         if: always()
         continue-on-error: true
@@ -558,3 +653,19 @@ jobs:
           TG_API_URL: ${{ secrets.TG_API_URL || 'http://localhost:8081' }}
           PHASE: hevc
         run: python3 scripts/notify.py
+
+      - name: Bersihkan file video di disk runner (biar tidak tersisa)
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "🧹 Menghapus sisa file video/thumb di disk runner..."
+          F="${{ steps.fname.outputs.filename }}"
+          # Hapus MP4 + JPG + segment + file .txt lokal (asset .txt sudah di release)
+          rm -f "$F" 2>/dev/null
+          rm -f "${{ env.HEVC_FILE }}" 2>/dev/null
+          rm -f "${{ env.THUMB_FILE }}" 2>/dev/null
+          rm -f "${{ env.HEVC_THUMB_FILE }}" 2>/dev/null
+          rm -f segments/part-*.mp4 2>/dev/null
+          rm -f "${F%.mp4}"*.txt 2>/dev/null
+          rm -f *.mp4 *.jpg 2>/dev/null
+          echo "✅ Disk runner dibersihkan (GitHub hanya menyimpan .txt di Release)"
