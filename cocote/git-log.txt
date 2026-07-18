@@ -1,0 +1,22 @@
+# cocote git log 2026-07-18 14:11 WIB
+
+df95a79 feat: add cocote_cron.sh capture+notify+push [skip ci]
+95908ed chore: refresh [skip ci]
+380b2a7 chore: refresh [skip ci]
+531d6f5 fresh: single workflow cron 58 11-13
+760c8b9 cleanup: remove old workflows
+30a2651 test: cron at 14:15 UTC
+c93cbc0 test: cron every 5 min
+d0b25e8 test: minimal cron workflow
+8c79dcd test: cron tiap menit
+7bd21ad chore: refresh playlist [skip ci]
+1715fdf fix: pre tag utk code block
+b7c8c04 chore: refresh playlist [skip ci]
+dcd74ca feat: telegram_notify.py + HTML code format
+33e75f5 chore: refresh playlist [skip ci]
+d176e25 fix: real newline di telegram text
+44c922e chore: refresh playlist [skip ci]
+b8df102 chore: refresh playlist [skip ci]
+6a46d1b fix: cron test every :58
+c56c676 fix: cron 18:58, 19:58, 20:58 WIB
+606f4b3 fix: cron syntax 0 12,13,14,15

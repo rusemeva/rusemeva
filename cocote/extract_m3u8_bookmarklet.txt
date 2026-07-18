@@ -1,0 +1,21 @@
+// Bookmarklet: ekstrak .m3u8 dari sevenhub.id/live (Dailymotion Trans7)
+// Cara pakai:
+// 1. Buka https://sevenhub.id/live di browser rumah lo
+// 2. Tunggu video mulai (2-3 menit sebelum token expired)
+// 3. Klik bookmark ini -> .m3u8 muncul di alert + auto-copy ke clipboard
+// 4. Paste ke GitHub
+
+javascript:(async()=>{
+  const vid='x8qckyq';
+  const dmTs=Math.floor(Date.now()/1000)%1000000;
+  const dmV1st='00a6db6f-0d2b-e7da-4b68-8da7135d0d0f';
+  const api=`https://geo.dailymotion.com/video/${vid}.json?legacy=true&embedder=${encodeURIComponent('https://sevenhub.id/live')}&geo=1&player-id=x15a7g&publisher-id=x2virdk&locale=id&dmV1st=${dmV1st}&dmTs=${dmTs}&is_native_app=0&app=idm.internet.download.manager.plus&dmViewId=1jtncqgbk6a3020c78f&parallelCalls=1`;
+  try{
+    const r=await fetch(api,{credentials:'include',headers:{'Referer':'https://sevenhub.id/live'}});
+    const d=await r.json();
+    const m3u8=d.qualities.auto[0].url;
+    const out=`#EXTM3U\n#EXTINF:-1,Trans7 Live (Dailymotion)\n${m3u8}\n`;
+    await navigator.clipboard.writeText(out);
+    alert('M3U8 copied!\\n\\n'+m3u8);
+  }catch(e){ alert('Error: '+e.message); }
+})();
