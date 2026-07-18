@@ -7,3 +7,5 @@ deploy.py
 check_auth.py
 set_gh_secrets.py
 setup_r2.py
+
+.wrangler/
