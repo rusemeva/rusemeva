@@ -1,0 +1,242 @@
+import json, os, urllib.request, mimetypes, uuid
+
+chat_id = os.environ["CHAT_ID"]
+bot_token = os.environ["BOT_TOKEN"]
+filename = os.environ["FILENAME"]
+human_dur = os.environ.get("HUMAN_DUR", "?")
+tag = os.environ.get("TAG", "")
+repo = os.environ.get("GITHUB_REPOSITORY", "")
+server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+run_id = os.environ.get("GITHUB_RUN_ID", "")
+job_status = os.environ.get("JOB_STATUS", "")
+phase = os.environ.get("PHASE", "both")
+
+# Metadata original (dari step ffprobe; default "?" kalau kosong)
+real_duration = os.environ.get("REAL_DURATION", "") or "?"
+resolution = os.environ.get("RESOLUTION", "") or "?"
+vcodec = os.environ.get("VCODEC", "") or "?"
+vbitrate = os.environ.get("VBITRATE", "") or "?"
+file_size = os.environ.get("FILE_SIZE", "") or "?"
+orig_bytes = int(os.environ.get("ORIG_BYTES", "0") or "0")
+thumb_file = os.environ.get("THUMB_FILE", "")
+has_thumb = os.environ.get("HAS_THUMB", "0") == "1"
+
+# Thumbnail khusus HEVC 10-bit (hasil encode, bukan punya original)
+hevc_thumb_file = os.environ.get("HEVC_THUMB_FILE", "")
+has_hevc_thumb = os.environ.get("HAS_HEVC_THUMB", "0") == "1"
+
+# Metadata HEVC (hasil encode, ffprobe)
+hevc_file = os.environ.get("HEVC_FILE", "")
+hevc_size = os.environ.get("HEVC_SIZE", "")
+hevc_res = os.environ.get("HEVC_RES", "") or resolution
+hevc_codec = os.environ.get("HEVC_VCODEC", "") or "hevc"
+hevc_br = os.environ.get("HEVC_VBITRATE", "") or "?"
+hevc_dur = os.environ.get("HEVC_DUR", "") or real_duration
+
+run_url = f"{server_url}/{repo}/actions/runs/{run_id}"
+release_url = f"https://github.com/{repo}/releases/tag/{tag}" if tag else ""
+
+# Default ke local Bot API Server (allow 2GB). Token disisipkan di path /bot<TOKEN>.
+API = f"{os.environ.get('TG_API_URL', 'http://localhost:8081').rstrip('/')}/bot{bot_token}"
+print(f"ℹ️  Notify start | phase={phase} | API={API[:40]}... | chat={chat_id} | job={job_status} | file={filename} | hevc={'yes' if hevc_file else 'no'}", flush=True)
+
+
+def send_message(text):
+    """Kirim pesan teks biasa (fallback)."""
+    data = json.dumps({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }).encode()
+    req = urllib.request.Request(
+        f"{API}/sendMessage",
+        data=data, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=30)
+        return True
+    except Exception as e:
+        print(f"⚠️ sendMessage gagal: {e}")
+        return False
+
+
+def send_video(video_path, thumb_path, caption):
+    """Kirim video langsung ke Telegram (playable inline) via multipart/form-data.
+    Lewat local Bot API Server (TG_API_URL), max upload dinaikkan ke 2 GB."""
+    if not video_path or not os.path.isfile(video_path) or os.path.getsize(video_path) == 0:
+        print("⚠️ File video tidak valid, lewati sendVideo.")
+        return False
+
+    size = os.path.getsize(video_path)
+    MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB (local Bot API Server)
+    if size > MAX_BYTES:
+        print(f"⚠️ Video {size/1024/1024/1024:.2f} GB > 2 GB, tidak dikirim langsung.")
+        return False
+
+    boundary = f"----orvella{uuid.uuid4().hex}"
+
+    parts = []
+    # chat_id
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
+    parts.append(f"{chat_id}\r\n".encode())
+    # caption
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
+    parts.append(f"{caption}\r\n".encode())
+    # parse_mode
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(b'Content-Disposition: form-data; name="parse_mode"\r\n\r\n')
+    parts.append(b"HTML\r\n")
+    # thumb (optional)
+    if thumb_path and os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
+        with open(thumb_path, "rb") as tf:
+            tbytes = tf.read()
+        tname = os.path.basename(thumb_path)
+        tctype = mimetypes.guess_type(tname)[0] or "image/jpeg"
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append(
+            f'Content-Disposition: form-data; name="thumb"; filename="{tname}"\r\n'.encode())
+        parts.append(f"Content-Type: {tctype}\r\n\r\n".encode())
+        parts.append(tbytes)
+        parts.append(b"\r\n")
+    # video (file)
+    with open(video_path, "rb") as f:
+        vbytes = f.read()
+    vname = os.path.basename(video_path)
+    vctype = mimetypes.guess_type(vname)[0] or "video/mp4"
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(
+        f'Content-Disposition: form-data; name="video"; filename="{vname}"\r\n'.encode())
+    parts.append(f"Content-Type: {vctype}\r\n\r\n".encode())
+    parts.append(vbytes)
+    parts.append(b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    req = urllib.request.Request(
+        f"{API}/sendVideo",
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        urllib.request.urlopen(req, timeout=600)
+        return True
+    except Exception as e:
+        print(f"⚠️ sendVideo gagal: {e}")
+        return False
+
+
+def send_photo_fallback(photo_path, caption):
+    """Kirim foto (thumbnail) dengan caption via multipart/form-data (fallback)."""
+    if not photo_path or not os.path.isfile(photo_path) or os.path.getsize(photo_path) == 0:
+        print("⚠️ Thumbnail tidak valid, lewati sendPhoto.")
+        return False
+    try:
+        with open(photo_path, "rb") as f:
+            photo_bytes = f.read()
+    except Exception as e:
+        print(f"⚠️ Gagal baca thumbnail: {e}")
+        return False
+
+    boundary = f"----orvella{uuid.uuid4().hex}"
+    fname = os.path.basename(photo_path)
+    ctype = mimetypes.guess_type(fname)[0] or "image/jpeg"
+
+    parts = []
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
+    parts.append(f"{chat_id}\r\n".encode())
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
+    parts.append(f"{caption}\r\n".encode())
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(b'Content-Disposition: form-data; name="parse_mode"\r\n\r\n')
+    parts.append(b"HTML\r\n")
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(
+        f'Content-Disposition: form-data; name="photo"; filename="{fname}"\r\n'.encode())
+    parts.append(f"Content-Type: {ctype}\r\n\r\n".encode())
+    parts.append(photo_bytes)
+    parts.append(b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    req = urllib.request.Request(
+        f"{API}/sendPhoto",
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        urllib.request.urlopen(req, timeout=60)
+        return True
+    except Exception as e:
+        print(f"⚠️ sendPhoto gagal: {e}")
+        return False
+
+
+def send_video_with_fallback(video_path, caption, thumb_path):
+    """Kirim video (max 2GB) via local Bot API Server; fallback foto+link lalu teks."""
+    if send_video(video_path, thumb_path, caption):
+        return True
+    fallback_caption = caption + (f"\n\n📂 Release: {release_url}\n🔗 Run: {run_url}" if release_url else "")
+    if thumb_path and os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
+        if send_photo_fallback(thumb_path, fallback_caption):
+            return True
+    send_message(fallback_caption)
+    return False
+
+
+if job_status == "success":
+    thumb_path = thumb_file if (has_thumb and os.path.isfile(thumb_file)) else ""
+
+    # --- Phase original: kirim video ORIGINAL (asli, tidak diubah) ---
+    # Kalau original > 2GB (limit Bot API + GitHub), dilewati — HEVC tetap dikirim.
+    if phase in ("original", "both"):
+        caption_orig = (
+            f"✅ <b>Rekaman selesai!</b>\n\n"
+            f"📦 File: <code>{filename}</code>\n"
+            f"📏 Size: {file_size}\n"
+            f"⏱ Durasi: {real_duration}\n"
+            f"🖥 Resolusi: {resolution}\n"
+            f"🎞 Codec: {vcodec}\n"
+            f"📶 Bitrate: {vbitrate}"
+        )
+        if orig_bytes > 2 * 1024 * 1024 * 1024:
+            print(f"⚠️ ORIGINAL {orig_bytes/1024/1024/1024:.2f} GB > 2GB — dilewati (limit). HEVC tetap dikirim.", flush=True)
+            send_message(
+                f"⚠️ <b>Original {orig_bytes/1024/1024/1024:.2f} GB &gt; 2GB limit</b> — tidak dikirim.\n"
+                f"📦 File: <code>{filename}</code>\n"
+                f"🎞 HEVC 10-bit (lebih kecil) tetap dikirim di pesan berikutnya."
+            )
+        elif os.path.isfile(filename) and os.path.getsize(filename) > 0:
+            print("📤 Mengirim video ORIGINAL...", flush=True)
+            send_video_with_fallback(filename, caption_orig, thumb_path)
+
+    # --- Phase hevc: kirim video HEVC 10-bit (metadata asli hasil encode) ---
+    if phase in ("hevc", "both"):
+        if hevc_file and os.path.isfile(hevc_file) and os.path.getsize(hevc_file) > 0:
+            print("📤 Mengirim video HEVC 10-bit...", flush=True)
+            hevc_thumb_path = hevc_thumb_file if (has_hevc_thumb and os.path.isfile(hevc_thumb_file)) else ""
+            caption_hevc = (
+                f"🎞 <b>HEVC 10-bit</b>\n\n"
+                f"📦 File: <code>{hevc_file}</code>\n"
+                f"📏 Size: {hevc_size}\n"
+                f"⏱ Durasi: {hevc_dur}\n"
+                f"🖥 Resolusi: {hevc_res}\n"
+                f"🎞 Codec: {hevc_codec}\n"
+                f"📶 Bitrate: {hevc_br}"
+            )
+            send_video_with_fallback(hevc_file, caption_hevc, hevc_thumb_path)
+
+elif job_status == "cancelled":
+    send_message(
+        f"🚫 <b>Rekaman dibatalkan.</b>\n\n"
+        f"📦 File: <code>{filename}</code>\n"
+        f"🔗 Run: {run_url}"
+    )
+else:
+    send_message(
+        f"❌ <b>Rekaman gagal.</b>\n\n"
+        f"📦 File: <code>{filename}</code>\n"
+        f"ℹ️ Sistem sudah mencoba ulang otomatis hingga 3x.\n"
+        f"🔗 Cek log: {run_url}"
+    )

@@ -1,0 +1,7 @@
+name = "cocote"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "cocote"
