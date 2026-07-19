@@ -118,14 +118,15 @@ export default {
 // ============ SETTING (encode profile) ============
 
 // Hitung estimasi waktu encode buat durasi tertentu.
-// Ratio diukur nyata di mesin (ultrafast 32s / veryfast 70s untuk 20s video => 2.19x).
-// Anchor: di runner GitHub 2 vCPU, veryfast 720p60 ~1.5x realtime (konservatif).
+// Ratio ultrafast:veryfast diukur nyata di mesin (32s:70s untuk 20s => 2.19x).
+// Anchor: di runner GitHub 2 vCPU, veryfast 720p60 ~2.5x realtime (encode lebih
+// cepat dari durasi rekam). slow ~3x lebih lambat dari veryfast, slower ~5.5x.
 // Disclaimer: estimasi, bisa +-30% tergantung isi video & beban runner.
 const SPEED_FACTOR = {
-  speed: 1.5 * 2.19,    // ultrafast vs veryfast 2.19x, veryfast 1.5x rt
-  balanced: 1.5,        // veryfast 1.5x rt
-  quality: 1.5 / 3.0,   // slow ~3x lebih lambat dari veryfast
-  max: 1.5 / 5.5,       // slower ~5.5x lebih lambat dari veryfast
+  speed: 2.5 * 2.19,    // ultrafast vs veryfast 2.19x
+  balanced: 2.5,        // veryfast 2.5x rt
+  quality: 2.5 / 3.0,   // slow ~3x lebih lambat
+  max: 2.5 / 5.5,       // slower ~5.5x lebih lambat
 };
 
 function estEncodeSeconds(profileKey, recordSeconds) {
@@ -208,14 +209,16 @@ async function handleSettingSelect(text, chatId, env) {
       const mark = k === key ? ' ▶' : '';
       msg += `• ${pp.label}${mark}: ~${formatDuration(e)} (${pp.quality})\n`;
     }
-    // Peringatan kalau total (rekam + encode) mendekati limit job 6 jam
+    // Peringatan kalau total (rekam + encode) vs limit job 6 jam
     const totalThis = durSec + estEncodeSeconds(key, durSec);
     const LIMIT = 6 * 3600;
     msg += `\n💡 Estimasi ±30% (tergantung isi video & beban runner GitHub).`;
-    if (totalThis > LIMIT * 0.85) {
-      msg += `\n⚠️ <b>Waspada:</b> total rekam + encode ~${formatDuration(totalThis)} ` +
-             `mendekati limit job 6 jam. HEVC bisa ke-skip kalau keburu timeout ` +
-             `(original tetap dikirim).`;
+    if (totalThis > LIMIT) {
+      msg += `\n⛔ <b>Ke-skip:</b> total ~${formatDuration(totalThis)} LEWAT limit 6 jam. ` +
+             `HEVC tidak akan diencode, original tetap dikirim.`;
+    } else if (totalThis > LIMIT * 0.85) {
+      msg += `\n⚠️ <b>Waspada:</b> total ~${formatDuration(totalThis)} mendekati limit 6 jam. ` +
+             `HEVC bisa ke-skip kalau keburu timeout (original tetap dikirim).`;
     } else if (totalThis > LIMIT * 0.6) {
       msg += `\n⏳ Total ~${formatDuration(totalThis)} — masih aman di bawah limit 6 jam.`;
     }
