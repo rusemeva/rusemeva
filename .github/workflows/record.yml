@@ -46,12 +46,14 @@ jobs:
         id: inputs
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "m3u8_url=${{ github.event.client_payload.m3u8_url }}" >> $GITHUB_OUTPUT
+              echo "m3u8_url=${{ github.event.client_payload.m3u8_url }}" >> $GITHUB_OUTPUT
             echo "duration=${{ github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
             echo "chat_id=${{ github.event.client_payload.chat_id }}" >> $GITHUB_OUTPUT
             echo "human_duration=${{ github.event.client_payload.human_duration }}" >> $GITHUB_OUTPUT
             echo "duration_label=${{ github.event.client_payload.duration_label }}" >> $GITHUB_OUTPUT
             echo "referer=${{ github.event.client_payload.referer }}" >> $GITHUB_OUTPUT
+            echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
+            echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
           else
             echo "m3u8_url=${{ inputs.m3u8_url }}" >> $GITHUB_OUTPUT
             echo "duration=${{ inputs.duration }}" >> $GITHUB_OUTPUT
@@ -536,7 +538,9 @@ jobs:
           FILE="${{ steps.fname.outputs.filename }}"
           HEVC_FILE="${FILE%.mp4}-h265-10bit.mp4"
           FFMPEG_STATIC="${{ env.FFMPEG_STATIC }}"
-          echo "🎞  Encoding HEVC 10-bit (main10, yuv420p10le, CRF 28)..."
+          HEVC_PRESET="${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}"
+          HEVC_CRF="${{ steps.inputs.outputs.hevc_crf || '24' }}"
+          echo "🎞  Encoding HEVC 10-bit (main10, yuv420p10le, preset=${HEVC_PRESET}, CRF ${HEVC_CRF})..."
 
           # Durasi untuk progress bar: pakai durasi request (DURATION_SEC),
           # BUKAN ffprobe — hasil -c copy dari live stream sering N/A.
@@ -551,7 +555,7 @@ jobs:
           NEXT_SEND=0
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-            -crf 28 -preset fast -tag:v hvc1 \
+            -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
             -c:a copy \
             -progress pipe:1 \
             "$HEVC_FILE" 2>/dev/null | while IFS='=' read -r k v; do
