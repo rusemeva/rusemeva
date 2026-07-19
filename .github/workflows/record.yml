@@ -72,6 +72,35 @@ jobs:
           FNAME="Orvella-Asset-${NOW}-${DURATION_LABEL}.mp4"
           echo "filename=$FNAME" >> $GITHUB_OUTPUT
 
+          # ---- Tentukan apakah HEVC encode masih keburu (<5.5j total) ----
+          # Estimasi encode (detik) = durasi / speed_factor.
+          # speed_factor: veryfast=2.5, ultrafast=2.5*2.19, slow=2.5/3, slower=2.5/5.5
+          DUR=${{ steps.inputs.outputs.duration }}
+          PRESET="${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}"
+          case "$PRESET" in
+            ultrafast) SF=5.475 ;;   # 2.5 * 2.19
+            veryfast)  SF=2.5 ;;
+            slow)      SF=0.833 ;;   # 2.5 / 3
+            slower)    SF=0.4545 ;;  # 2.5 / 5.5
+            *)         SF=2.5 ;;
+          esac
+          # pakai bc kalau ada, else aproksimasi integer
+          if command -v bc >/dev/null 2>&1; then
+            EST_ENC=$(echo "$DUR / $SF" | bc)
+          else
+            EST_ENC=$(( DUR * 1000 / ${SF%.*} / 1000 ))
+            # fallback kasar: bagi bulat
+            EST_ENC=$(( DUR / ${SF%.*} ))
+          fi
+          TOTAL=$(( DUR + EST_ENC ))
+          echo "Estimasi encode ~${EST_ENC}s, total rekam+encode ~${TOTAL}s"
+          if [ "$TOTAL" -gt 19800 ]; then   # 5.5 jam
+            echo "HEVC_SHOULD_RUN=false" >> $GITHUB_ENV
+            echo "⛔ HEVC di-skip (total ~$((TOTAL/3600))j melewati batas 5.5j). Original tetap dikirim."
+          else
+            echo "HEVC_SHOULD_RUN=true" >> $GITHUB_ENV
+          fi
+
       - name: Install dependencies (apt ffmpeg untuk rekam + static ffmpeg untuk HEVC)
         run: |
           # apt ffmpeg = stabil buat rekam (-c copy). Encoder libx265 di apt
@@ -525,7 +554,7 @@ jobs:
 
       - name: Encode to HEVC 10-bit (copy tambahan, asli tetap utuh)
         id: hevc
-        if: always()
+        if: ${{ env.HEVC_SHOULD_RUN != 'false' }}
         continue-on-error: true
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
