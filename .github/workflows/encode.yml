@@ -70,24 +70,18 @@ jobs:
           RAW="${{ steps.inputs.outputs.filename }}"
           echo "📥 Download original dari release temp: $TAG / $RAW"
           mkdir -p /tmp/orvella_dl
-          # pakai gh release download (otomatis resolve asset, termasuk segment)
-          if ! gh release download "$TAG" --repo "${{ github.repository }}" --dir /tmp/orvella_dl --pattern "${RAW}*" 2>/dev/null; then
-            echo "⚠️ gh release download gagal, coba satu per satu"
-            for a in $(gh release view "$TAG" --repo "${{ github.repository }}" --json assets -q '.assets[].name'); do
-              case "$a" in
-                ${RAW}*) gh release download "$TAG" --repo "${{ github.repository }}" --dir /tmp/orvella_dl --pattern "$a" 2>/dev/null || true ;;
-              esac
-            done
-          fi
+          # Download SEMUA asset dari release temp (original utuh ATAU segment part-*.mp4)
+          gh release download "$TAG" --repo "${{ github.repository }}" --dir /tmp/orvella_dl 2>/dev/null \
+            && echo "✅ Download semua asset release temp" \
+            || echo "⚠️ gh release download gagal"
           echo "📂 Isi download:"
           ls -lh /tmp/orvella_dl
 
           # Kalau terpecah jadi segment (part-*.mp4), gabungkan dulu
-          if ls /tmp/orvella_dl/${RAW%.mp4}-part-*.mp4 >/dev/null 2>&1; then
+          if ls /tmp/orvella_dl/part-*.mp4 >/dev/null 2>&1; then
             echo "🧩 Segment terdeteksi, gabungkan..."
-            # buat list untuk concat
             : > /tmp/orvella_dl/seglist.txt
-            for f in $(ls /tmp/orvella_dl/${RAW%.mp4}-part-*.mp4 | sort); do
+            for f in $(ls /tmp/orvella_dl/part-*.mp4 | sort); do
               echo "file '$f'" >> /tmp/orvella_dl/seglist.txt
             done
             "$FFMPEG_STATIC" -hide_banner -loglevel error -y -f concat -safe 0 \
