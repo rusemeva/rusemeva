@@ -124,7 +124,7 @@ jobs:
       - name: Auto-downgrade preset kalau estimasi > 5j50m
         id: autodg
         run: |
-          # Tabel faktor realtime (720p60, kalibrasi bench) + CRF default tiap profil
+          # Tabel faktor realtime (relatif ke 720p60, kalibrasi bench) + CRF default tiap profil
           declare -A RT=( [speed]=3.5 [balanced]=1.0 [quality]=2.5 [max]=0.5 )
           declare -A CRF=( [speed]=24 [balanced]=22 [quality]=24 [max]=20 )
           # Urutan cascade lambat -> cepat
@@ -133,11 +133,27 @@ jobs:
           CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '22' }}"
           DUR="${{ steps.inputs.outputs.duration }}"
           [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
-          # Ambang 5j50m = 350 menit, + overhead 15m = 365 menit total
           LIMIT_MIN=350
           OVERHEAD_MIN=15
-          rt=${RT[$PRESET]:-1.0}
-          est_min=$(( (DUR/60 / rt) + OVERHEAD_MIN ))
+          # --- Auto-detect resolusi buat nyesuain faktor realtime ---
+          ORIG="${{ steps.dl.outputs.ORIG_FILE }}"
+          RES_FACTOR=1.0; RES_W=""; RES_H=""
+          if command -v ffprobe >/dev/null 2>&1 && [ -n "$ORIG" ] && [ -s "$ORIG" ]; then
+            W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=noprint_wrappers=1:nokey=1 "$ORIG" 2>/dev/null | head -1)
+            H=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=noprint_wrappers=1:nokey=1 "$ORIG" 2>/dev/null | head -1)
+            if [ -n "$W" ] && [ -n "$H" ] && [ "$W" -gt 0 ] 2>/dev/null; then
+              RES_FACTOR=$(awk "BEGIN{ v=(1280*720)/($W*$H); if(v<0.3) v=0.3; printf \"%.3f\", v }")
+              RES_W="$W"; RES_H="$H"
+              echo "📐 Resolusi terdeteksi: ${W}x${H} (faktor ${RES_FACTOR}x vs 720p60)"
+            else
+              echo "⚠️ ffprobe gak dapet resolusi, pakai faktor 720p60 (1.0x)"
+            fi
+          else
+            echo "ℹ️ ffprobe gak tersedia / file kosong, pakai faktor 720p60 (1.0x)"
+          fi
+          # realtime efektif = faktor preset x faktor resolusi
+          rt=$(awk "BEGIN{printf \"%.4f\", ${RT[$PRESET]:-1.0} * $RES_FACTOR}")
+          est_min=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $rt) + $OVERHEAD_MIN}")
           echo "🎚 Preset dipilih: $PRESET (CRF $CRF_VAL)"
           echo "⏱ Estimasi encode: ${est_min}m (durasi=$((DUR/60))m, ${rt}x realtime)"
           FINAL="$PRESET"
@@ -148,8 +164,8 @@ jobs:
             for p in "${ORDER[@]}"; do
               if [ "$p" = "$PRESET" ]; then found=1; continue; fi
               if [ "$found" = "1" ]; then
-                nrt=${RT[$p]}
-                nest=$(( (DUR/60 / nrt) + OVERHEAD_MIN ))
+                nrt=$(awk "BEGIN{printf \"%.4f\", ${RT[$p]} * $RES_FACTOR}")
+                nest=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $nrt) + $OVERHEAD_MIN}")
                 if [ "$nest" -le "$LIMIT_MIN" ]; then
                   FINAL="$p"; FINAL_CRF="${CRF[$p]}"; echo "✅ Turun ke: $FINAL (CRF $FINAL_CRF, estimasi ${nest}m)"; break
                 fi
@@ -163,6 +179,8 @@ jobs:
           fi
           echo "FINAL_PRESET=$FINAL" >> $GITHUB_OUTPUT
           echo "FINAL_CRF=$FINAL_CRF" >> $GITHUB_OUTPUT
+          echo "RES_W=$RES_W" >> $GITHUB_OUTPUT
+          echo "RES_H=$RES_H" >> $GITHUB_OUTPUT
 
       - name: Encode to HEVC 10-bit (dari original, full 6 jam)
         id: hevc
