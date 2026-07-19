@@ -228,6 +228,13 @@ if job_status == "success":
             elif res is True:
                 print("✅ ORIGINAL terkirim (via fallback, tanpa file_id).", flush=True)
 
+            # Info: HEVC akan di-encode di workflow TERPISAH (orvella-encode, full 6 jam)
+            send_message(
+                f"⏳ <b>HEVC 10-bit akan di-encode terpisah</b> (workflow <code>orvella-encode</code>, "
+                f"hingga 6 jam penuh).\n"
+                f"📦 Hasil HEVC akan dikirim di pesan berikutnya setelah encode selesai."
+            )
+
     # --- Phase hevc: kirim video HEVC 10-bit (metadata asli hasil encode) ---
     if phase in ("hevc", "both"):
         if hevc_file and os.path.isfile(hevc_file) and os.path.getsize(hevc_file) > 0:
