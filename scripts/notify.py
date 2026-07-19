@@ -166,16 +166,26 @@ def send_photo_fallback(photo_path, caption):
         data=body,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
     try:
-        urllib.request.urlopen(req, timeout=60)
+        resp = urllib.request.urlopen(req, timeout=600)
+        try:
+            js = json.loads(resp.read().decode())
+            if js.get("ok") and js.get("result", {}).get("video", {}).get("file_id"):
+                return js["result"]["video"]["file_id"]
+        except Exception:
+            pass
         return True
     except Exception as e:
-        print(f"⚠️ sendPhoto gagal: {e}")
+        print(f"⚠️ sendVideo gagal: {e}")
         return False
 
 
 def send_video_with_fallback(video_path, caption, thumb_path):
-    """Kirim video (max 2GB) via local Bot API Server; fallback foto+link lalu teks."""
-    if send_video(video_path, thumb_path, caption):
+    """Kirim video (max 2GB) via local Bot API Server; fallback foto+link lalu teks.
+    Return file_id (str) kalau sukses lewat sendVideo, True kalau sukses fallback, False kalau gagal."""
+    fid = send_video(video_path, thumb_path, caption)
+    if isinstance(fid, str):
+        return fid
+    if fid is True:
         return True
     fallback_caption = caption + (f"\n\n📂 Release: {release_url}\n🔗 Run: {run_url}" if release_url else "")
     if thumb_path and os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
@@ -209,7 +219,14 @@ if job_status == "success":
             )
         elif os.path.isfile(filename) and os.path.getsize(filename) > 0:
             print("📤 Mengirim video ORIGINAL...", flush=True)
-            send_video_with_fallback(filename, caption_orig, thumb_path)
+            res = send_video_with_fallback(filename, caption_orig, thumb_path)
+            # Capture file_id (kalau sukses lewat sendVideo) untuk trigger encode terpisah
+            if isinstance(res, str):
+                with open("/tmp/orvella_orig_file_id.txt", "w") as f:
+                    f.write(res)
+                print(f"✅ ORIGINAL terkirim, file_id={res[:20]}... (disimpan untuk encode)", flush=True)
+            elif res is True:
+                print("✅ ORIGINAL terkirim (via fallback, tanpa file_id).", flush=True)
 
     # --- Phase hevc: kirim video HEVC 10-bit (metadata asli hasil encode) ---
     if phase in ("hevc", "both"):
