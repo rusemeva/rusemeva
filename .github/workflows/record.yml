@@ -3,6 +3,7 @@ name: orvella-vault
 # re-index trigger 2026-07-15
 permissions:
   contents: write
+  actions: write
 
 on:
   repository_dispatch:
@@ -521,70 +522,7 @@ jobs:
           HAS_THUMB: ${{ env.HAS_THUMB }}
           TG_API_URL: ${{ secrets.TG_API_URL || 'http://localhost:8081' }}
           PHASE: original
-        run: python3 scripts/notify.py
-
-      - name: Upload ORIGINAL ke release temp + trigger encode terpisah
-        if: success()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CHAT_ID: ${{ steps.inputs.outputs.chat_id }}
-          FILENAME: ${{ steps.fname.outputs.filename }}
-          HUMAN_DUR: ${{ steps.inputs.outputs.human_duration }}
-          DURATION: ${{ steps.inputs.outputs.duration }}
           HEVC_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
           HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        run: |
-          set +e
-          FILE="${{ steps.fname.outputs.filename }}"
-          TAG="orvella-encode-${{ github.run_id }}"
-          echo "📦 Upload ORIGINAL ke release temp: $TAG"
-          UPLOAD_FILES=""
-          if [ "${{ env.SEGMENTED }}" = "1" ]; then
-            for f in segments/part-*.mp4; do
-              [ -s "$f" ] && UPLOAD_FILES="$UPLOAD_FILES \"$f\""
-            done
-          else
-            [ -s "$FILE" ] && UPLOAD_FILES="\"$FILE\""
-          fi
-          if [ -z "$UPLOAD_FILES" ]; then
-            echo "⚠️ Tidak ada file original utk diupload, skip trigger encode."
-            exit 0
-          fi
-          eval gh release create "$TAG" --repo "${{ github.repository }}" \
-            --title "Orvella Encode Temp (${{ github.run_id }})" \
-            --notes "Temporary original for separate HEVC encode." $UPLOAD_FILES \
-            && echo "✅ Release temp dibuat" || echo "⚠️ Gagal bikin release temp"
-          FID=$(cat /tmp/orvella_orig_file_id.txt 2>/dev/null || echo "")
-          PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({
-            'file_id': '''$FID''',
-            'filename': '''$FILE''',
-            'chat_id': '''${{ steps.inputs.outputs.chat_id }}''',
-            'human_duration': '''${{ steps.inputs.outputs.human_duration }}''',
-            'duration': '''${{ steps.inputs.outputs.duration }}''',
-            'release_tag': '''$TAG''',
-            'hevc_preset': '''${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}''',
-            'hevc_crf': '''${{ steps.inputs.outputs.hevc_crf || '24' }}'''
-          }))")
-          gh api repos/${{ github.repository }}/dispatches \
-            -f event_type=encode-request \
-            -f "client_payload=$PAYLOAD" \
-            && echo "✅ encode.yml ditrigger (preset=${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}, crf=${{ steps.inputs.outputs.hevc_crf || '24' }})" \
-            || echo "⚠️ Gagal trigger encode.yml"
 
-      - name: Bersihkan file video di disk runner (biar tidak tersisa)
-        if: always()
-        continue-on-error: true
-        run: |
-          echo "🧹 Menghapus sisa file video/thumb di disk runner..."
-          F="${{ steps.fname.outputs.filename }}"
-          # Hapus MP4 + JPG + segment + file .txt lokal (asset .txt sudah di release)
-          rm -f "$F" 2>/dev/null
-          rm -f "${{ env.HEVC_FILE }}" 2>/dev/null
-          rm -f "${{ env.THUMB_FILE }}" 2>/dev/null
-          rm -f "${{ env.HEVC_THUMB_FILE }}" 2>/dev/null
-          rm -f segments/part-*.mp4 2>/dev/null
-          rm -f "${F%.mp4}"*.txt 2>/dev/null
-          rm -f *.mp4 *.jpg 2>/dev/null
-          echo "✅ Disk runner dibersihkan (GitHub hanya menyimpan .txt di Release)"
+        run: python3 scripts/notify.py

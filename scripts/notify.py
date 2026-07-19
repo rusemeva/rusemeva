@@ -21,11 +21,45 @@ orig_bytes = int(os.environ.get("ORIG_BYTES", "0") or "0")
 thumb_file = os.environ.get("THUMB_FILE", "")
 has_thumb = os.environ.get("HAS_THUMB", "0") == "1"
 
-# Thumbnail khusus HEVC 10-bit (hasil encode, bukan punya original)
-hevc_thumb_file = os.environ.get("HEVC_THUMB_FILE", "")
-has_hevc_thumb = os.environ.get("HAS_HEVC_THUMB", "0") == "1"
+# Preset HEVC + durasi original (buat estimasi ETA encode terpisah)
+hevc_preset = (os.environ.get("HEVC_PRESET", "") or "veryfast").strip() or "veryfast"
+hevc_crf = (os.environ.get("HEVC_CRF", "") or "24").strip() or "24"
 
-# Metadata HEVC (hasil encode, ffprobe)
+# Faktor realtime (720p60, kalibrasi bench): ultrafast~3.5x, veryfast~2.5x, slow~1x, slower~0.5x
+RT_FACTOR = {
+    "ultrafast": 3.5, "superfast": 3.0, "veryfast": 2.5, "faster": 2.0,
+    "fast": 1.5, "medium": 1.2, "slow": 1.0, "slower": 0.5, "veryslow": 0.3,
+}
+
+def estimate_encode(dur_str):
+    """Hitung estimasi encode dari durasi + preset. Return (eta_min, rt)."""
+    # parse durasi "4 jam" / "2h19m" / "01:23:45"
+    import re as _re
+    secs = 0
+    mm = _re.search(r"(\d+)\s*jam", dur_str)
+    if mm: secs += int(mm.group(1)) * 3600
+    mm = _re.search(r"(\d+)\s*menit", dur_str)
+    if mm: secs += int(mm.group(1)) * 60
+    mm = _re.search(r"(\d+)\s*detik", dur_str)
+    if mm: secs += int(mm.group(1))
+    mm = _re.search(r"(\d+):(\d+):(\d+)", dur_str)
+    if mm: secs = int(mm.group(1))*3600 + int(mm.group(2))*60 + int(mm.group(3))
+    rt = RT_FACTOR.get(hevc_preset, 2.5)
+    enc_secs = int(secs / rt) if rt > 0 else secs
+    # overhead: download original + upload HEVC (kasar 15 menit buat file besar)
+    enc_secs += 15 * 60
+    return enc_secs, rt
+
+def fmt_dur(s):
+    h = s // 3600; m = (s % 3600) // 60
+    if h: return f"{h}j{m}m"
+    return f"{m}m"
+
+def eta_clock(mins_from_now):
+    from datetime import datetime, timedelta
+    t = datetime.utcnow() + timedelta(minutes=mins_from_now)
+    return t.strftime("%H:%M") + " UTC"
+
 hevc_file = os.environ.get("HEVC_FILE", "")
 hevc_size = os.environ.get("HEVC_SIZE", "")
 hevc_res = os.environ.get("HEVC_RES", "") or resolution
@@ -229,10 +263,16 @@ if job_status == "success":
                 print("✅ ORIGINAL terkirim (via fallback, tanpa file_id).", flush=True)
 
             # Info: HEVC akan di-encode di workflow TERPISAH (orvella-encode, full 6 jam)
+            enc_secs, rt = estimate_encode(human_dur)
+            warn = ""
+            if enc_secs > 6 * 3600:
+                warn = "\n⚠️ <b>Estimasi &gt; 6 jam</b> — encode bisa ke-potong limit GitHub! Turun ke preset lebih cepat (veryfast/slow)."
             send_message(
-                f"⏳ <b>HEVC 10-bit akan di-encode terpisah</b> (workflow <code>orvella-encode</code>, "
-                f"hingga 6 jam penuh).\n"
-                f"📦 Hasil HEVC akan dikirim di pesan berikutnya setelah encode selesai."
+                f"⏳ <b>HEVC 10-bit akan di-encode terpisah</b> (workflow <code>orvella-encode</code>, hingga 6 jam penuh).\n"
+                f"🎚 Preset: <code>{hevc_preset}</code> (CRF {hevc_crf})\n"
+                f"⏱ Estimasi encode: <b>{fmt_dur(enc_secs)}</b> (~{rt}x realtime)\n"
+                f"🕐 Prediksi HEVC masuk ~<b>{eta_clock(enc_secs // 60)}</b>\n"
+                f"📦 Hasil HEVC akan dikirim di pesan berikutnya setelah encode selesai.{warn}"
             )
 
     # --- Phase hevc: kirim video HEVC 10-bit (metadata asli hasil encode) ---
