@@ -201,14 +201,24 @@ async function handleSettingSelect(text, chatId, env) {
     msg += `\n<b>Estimasi encode (rekam ${formatDuration(durSec)}):</b>\n`;
     msg += `⏱ Profil ini: ~${formatDuration(estEncodeSeconds(key, durSec))}\n\n`;
     // Bandingkan semua profil biar user tahu trade-off
-    msg += `<b>Bandinngan semua profil:</b>\n`;
+    msg += `<b>Bandingkan semua profil:</b>\n`;
     for (const k of Object.keys(ENCODE_PROFILES)) {
       const pp = ENCODE_PROFILES[k];
       const e = estEncodeSeconds(k, durSec);
       const mark = k === key ? ' ▶' : '';
       msg += `• ${pp.label}${mark}: ~${formatDuration(e)} (${pp.quality})\n`;
     }
+    // Peringatan kalau total (rekam + encode) mendekati limit job 6 jam
+    const totalThis = durSec + estEncodeSeconds(key, durSec);
+    const LIMIT = 6 * 3600;
     msg += `\n💡 Estimasi ±30% (tergantung isi video & beban runner GitHub).`;
+    if (totalThis > LIMIT * 0.85) {
+      msg += `\n⚠️ <b>Waspada:</b> total rekam + encode ~${formatDuration(totalThis)} ` +
+             `mendekati limit job 6 jam. HEVC bisa ke-skip kalau keburu timeout ` +
+             `(original tetap dikirim).`;
+    } else if (totalThis > LIMIT * 0.6) {
+      msg += `\n⏳ Total ~${formatDuration(totalThis)} — masih aman di bawah limit 6 jam.`;
+    }
   } else {
     msg += `\n💡 Ketik /setting ${key} <durasi> (contoh: /setting ${key} 120m) untuk estimasi waktu encode.`;
   }
