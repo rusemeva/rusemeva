@@ -1,11 +1,49 @@
 // ===== Akses privat: hanya owner yang boleh pakai bot =====
 const ALLOWED_USER_ID = 2027652715;
 
+// ===== Profil encode HEVC (preset + crf) =====
+// Setiap profil punya: label, preset x265, crf, dan ringkasan untuk /setting.
+const ENCODE_PROFILES = {
+  speed: {
+    key: 'speed',
+    label: '⚡ Ultra Cepat',
+    preset: 'ultrafast',
+    crf: 24,
+    quality: '🟡 lumayan',
+    note: 'Paling kenceng, file lebih gede (1.5–2x). Aman buat rekam sangat panjang.',
+  },
+  balanced: {
+    key: 'balanced',
+    label: '🟢 Cepat (Default)',
+    preset: 'veryfast',
+    crf: 24,
+    quality: '🟢 bagus',
+    note: 'Cepat & kualitas oke. Default bot.',
+  },
+  quality: {
+    key: 'quality',
+    label: '🟢🟢 Berkualitas',
+    preset: 'slow',
+    crf: 22,
+    quality: '🟢🟢 lebih oke',
+    note: 'Lebih bersih & file ~20% lebih kecil. Encode agak lama.',
+  },
+  max: {
+    key: 'max',
+    label: '🟢🟢🟢 Maksimal',
+    preset: 'slower',
+    crf: 20,
+    quality: '🟢🟢🟢 transparan',
+    note: 'Kualitas dekat-transparan, file ~30% lebih kecil. Encode paling lama.',
+  },
+};
+const DEFAULT_PROFILE = 'balanced';
+
 export default {
   async fetch(request, env, ctx) {
     // Return OK immediately to prevent Telegram webhook retries
     const response = new Response('OK');
-    
+
     try {
       if (request.method === 'POST') {
         const update = await request.json();
@@ -22,13 +60,14 @@ export default {
           }
           return response;
         }
-        
+
         if (update.message?.text === '/start' || update.message?.text === '/help') {
           ctx.waitUntil(sendMessage(env.BOT_TOKEN, update.message.chat.id,
             '🎬 <b>Orvella Vault</b>\n\n' +
                         '<b>Commands:</b>\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; — Process media\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; --referer &lt;url&gt; — Process with referer\n' +
+                        '/setting — Pilih profil encode HEVC\n' +
                         '/status — Cek status\n' +
                         '/cancel — Batalkan proses\n\n' +
                         '<b>Format durasi:</b>\n' +
@@ -51,6 +90,11 @@ export default {
         // Offload all handlers to waitUntil — respond to webhook instantly
         if (text.startsWith('/record')) {
           ctx.waitUntil(handleRecord(text, chatId, env));
+        } else if (text === '/setting') {
+          ctx.waitUntil(handleSetting(chatId, env));
+        } else if (text.startsWith('/setting ')) {
+          // /setting <key> — pilih profil langsung
+          ctx.waitUntil(handleSettingSelect(text, chatId, env));
         } else if (text === '/status') {
           ctx.waitUntil(handleStatus(chatId, env));
         } else if (text === '/cancel') {
@@ -70,6 +114,107 @@ export default {
     }
   }
 };
+
+// ============ SETTING (encode profile) ============
+
+// Hitung estimasi waktu encode buat durasi tertentu.
+// Ratio diukur nyata di mesin (ultrafast 32s / veryfast 70s untuk 20s video => 2.19x).
+// Anchor: di runner GitHub 2 vCPU, veryfast 720p60 ~1.5x realtime (konservatif).
+// Disclaimer: estimasi, bisa +-30% tergantung isi video & beban runner.
+const SPEED_FACTOR = {
+  speed: 1.5 * 2.19,    // ultrafast vs veryfast 2.19x, veryfast 1.5x rt
+  balanced: 1.5,        // veryfast 1.5x rt
+  quality: 1.5 / 3.0,   // slow ~3x lebih lambat dari veryfast
+  max: 1.5 / 5.5,       // slower ~5.5x lebih lambat dari veryfast
+};
+
+function estEncodeSeconds(profileKey, recordSeconds) {
+  const f = SPEED_FACTOR[profileKey] || SPEED_FACTOR.balanced;
+  // waktu encode = durasi rekam / faktor (faktor>1 = lebih cepat dari realtime)
+  return Math.round(recordSeconds / f);
+}
+
+async function getProfile(env, chatId) {
+  try {
+    const v = await env.ORVELLA_KV.get(`encprof:${chatId}`);
+    if (v && ENCODE_PROFILES[v]) return v;
+  } catch (_) {}
+  return DEFAULT_PROFILE;
+}
+
+async function setProfile(env, chatId, key) {
+  if (!ENCODE_PROFILES[key]) return false;
+  try {
+    await env.ORVELLA_KV.put(`encprof:${chatId}`, key);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function handleSetting(chatId, env) {
+  const current = await getProfile(env, chatId);
+  let msg = '⚙️ <b>Pengaturan Encode HEVC</b>\n\n';
+  msg += `Profil aktif: <b>${ENCODE_PROFILES[current].label}</b>\n\n`;
+  msg += 'Pilih profil (ketik perintah):\n\n';
+  for (const k of Object.keys(ENCODE_PROFILES)) {
+    const p = ENCODE_PROFILES[k];
+    const mark = k === current ? ' ✓' : '';
+    msg += `${p.label}${mark}\n`;
+    msg += `  └ /setting ${p.key}\n`;
+    msg += `     preset: ${p.preset} | crf: ${p.crf} | kualitas: ${p.quality}\n`;
+    msg += `     ${p.note}\n\n`;
+  }
+  msg += '💡 Estimasi waktu encode otomatis disesuaikan durasi rekam. Contoh pakai /record 120m.';
+  await sendMessage(env.BOT_TOKEN, chatId, msg);
+}
+
+async function handleSettingSelect(text, chatId, env) {
+  const parts = text.trim().split(/\s+/);
+  const key = parts[1]?.toLowerCase();
+  if (!key || !ENCODE_PROFILES[key]) {
+    await sendMessage(env.BOT_TOKEN, chatId,
+      '❌ Profil tidak dikenal.\nGunakan: /setting speed | balanced | quality | max\n' +
+      'Optional durasi: /setting quality 120m (untuk estimasi waktu encode).'
+    );
+    return;
+  }
+  const ok = await setProfile(env, chatId, key);
+  const p = ENCODE_PROFILES[key];
+  if (!ok) {
+    await sendMessage(env.BOT_TOKEN, chatId, '⚠️ Gagal menyimpan ke KV (cek binding wrangler.toml).');
+    return;
+  }
+
+  // Parse durasi opsional (misal /setting quality 120m)
+  let durSec = null;
+  if (parts[2]) {
+    durSec = parseDuration(parts[2]);
+  }
+
+  let msg = `✅ Profil diubah ke <b>${p.label}</b>\n\n` +
+    `⚙️ preset: <code>${p.preset}</code> | crf: <code>${p.crf}</code>\n` +
+    `🟢 kualitas: ${p.quality}\n` +
+    `📦 ${p.note}\n`;
+
+  if (durSec && durSec > 0) {
+    msg += `\n<b>Estimasi encode (rekam ${formatDuration(durSec)}):</b>\n`;
+    msg += `⏱ Profil ini: ~${formatDuration(estEncodeSeconds(key, durSec))}\n\n`;
+    // Bandingkan semua profil biar user tahu trade-off
+    msg += `<b>Bandinngan semua profil:</b>\n`;
+    for (const k of Object.keys(ENCODE_PROFILES)) {
+      const pp = ENCODE_PROFILES[k];
+      const e = estEncodeSeconds(k, durSec);
+      const mark = k === key ? ' ▶' : '';
+      msg += `• ${pp.label}${mark}: ~${formatDuration(e)} (${pp.quality})\n`;
+    }
+    msg += `\n💡 Estimasi ±30% (tergantung isi video & beban runner GitHub).`;
+  } else {
+    msg += `\n💡 Ketik /setting ${key} <durasi> (contoh: /setting ${key} 120m) untuk estimasi waktu encode.`;
+  }
+
+  await sendMessage(env.BOT_TOKEN, chatId, msg);
+}
 
 // ============ COMMAND HANDLERS ============
 
@@ -144,6 +289,10 @@ async function handleRecord(text, chatId, env) {
     return new Response('OK');
   }
 
+  // Ambil profil encode aktif
+  const profileKey = await getProfile(env, chatId);
+  const profile = ENCODE_PROFILES[profileKey];
+
   // Generate filename (WIB timezone)
   const now = new Date();
   const wib = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
@@ -152,13 +301,14 @@ async function handleRecord(text, chatId, env) {
   const filename = `recording-${ts}-${formatDurationShort(duration)}.mp4`;
 
   // Trigger GitHub Actions
-  const ghResp = await triggerGitHubActions(env, url, duration, chatId, filename, referer);
+  const ghResp = await triggerGitHubActions(env, url, duration, chatId, filename, referer, profile);
 
   if (ghResp.ok) {
     let msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
       `🔗 URL: <code>${escapeHtml(url)}</code>\n` +
       `⏱ Durasi: ${formatDuration(duration)}\n` +
-      `📦 File: ${filename}\n`;
+      `📦 File: ${filename}\n` +
+      `⚙️ Encode: <b>${profile.label}</b> (${profile.preset}, crf ${profile.crf})\n`;
     if (referer) msg += `🔗 Referer: <code>${escapeHtml(referer)}</code>\n`;
     msg += '☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nKetik /status untuk cek progress.';
     await sendMessage(env.BOT_TOKEN, chatId, msg);
@@ -267,7 +417,7 @@ function parseDuration(str) {
 
 // ============ HELPERS ============
 
-async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, referer = '') {
+async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, referer = '', profile = null) {
   const payload = {
     m3u8_url: m3u8Url,
     duration: duration,
@@ -277,6 +427,11 @@ async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, re
     filename: filename,
   };
   if (referer) payload.referer = referer;
+  // Sisipkan profil encode (fallback ke default kalau null)
+  const p = profile || ENCODE_PROFILES[DEFAULT_PROFILE];
+  payload.hevc_preset = p.preset;
+  payload.hevc_crf = p.crf;
+  payload.encode_profile = p.key;
 
   return fetch(
     `https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/dispatches`,
