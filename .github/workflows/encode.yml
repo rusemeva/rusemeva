@@ -121,6 +121,49 @@ jobs:
             sleep 2
           done
 
+      - name: Auto-downgrade preset kalau estimasi > 5j50m
+        id: autodg
+        run: |
+          # Tabel faktor realtime (720p60, kalibrasi bench) + CRF default tiap profil
+          declare -A RT=( [speed]=3.5 [balanced]=1.0 [quality]=2.5 [max]=0.5 )
+          declare -A CRF=( [speed]=24 [balanced]=22 [quality]=24 [max]=20 )
+          # Urutan cascade lambat -> cepat
+          ORDER=( max quality balanced speed )
+          PRESET="${{ steps.inputs.outputs.hevc_preset || 'balanced' }}"
+          CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '22' }}"
+          DUR="${{ steps.inputs.outputs.duration }}"
+          [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
+          # Ambang 5j50m = 350 menit, + overhead 15m = 365 menit total
+          LIMIT_MIN=350
+          OVERHEAD_MIN=15
+          rt=${RT[$PRESET]:-1.0}
+          est_min=$(( (DUR/60 / rt) + OVERHEAD_MIN ))
+          echo "🎚 Preset dipilih: $PRESET (CRF $CRF_VAL)"
+          echo "⏱ Estimasi encode: ${est_min}m (durasi=$((DUR/60))m, ${rt}x realtime)"
+          FINAL="$PRESET"
+          FINAL_CRF="$CRF_VAL"
+          if [ "$est_min" -gt "$LIMIT_MIN" ]; then
+            echo "⚠️ Estimasi ${est_min}m > ${LIMIT_MIN}m -> cari preset lebih cepat..."
+            found=0
+            for p in "${ORDER[@]}"; do
+              if [ "$p" = "$PRESET" ]; then found=1; continue; fi
+              if [ "$found" = "1" ]; then
+                nrt=${RT[$p]}
+                nest=$(( (DUR/60 / nrt) + OVERHEAD_MIN ))
+                if [ "$nest" -le "$LIMIT_MIN" ]; then
+                  FINAL="$p"; FINAL_CRF="${CRF[$p]}"; echo "✅ Turun ke: $FINAL (CRF $FINAL_CRF, estimasi ${nest}m)"; break
+                fi
+              fi
+            done
+            if [ "$FINAL" = "$PRESET" ]; then
+              echo "⚠️ Sudah di preset tercepat ($FINAL), gak bisa turun lagi."
+            fi
+          else
+            echo "✅ Estimasi aman, pakai preset asli: $FINAL"
+          fi
+          echo "FINAL_PRESET=$FINAL" >> $GITHUB_OUTPUT
+          echo "FINAL_CRF=$FINAL_CRF" >> $GITHUB_OUTPUT
+
       - name: Encode to HEVC 10-bit (dari original, full 6 jam)
         id: hevc
         if: success()
@@ -136,8 +179,15 @@ jobs:
           FILE="${{ steps.dl.outputs.ORIG_FILE }}"
           HEVC_FILE="${FILE%.mp4}-h265-10bit.mp4"
           FFMPEG_STATIC="${{ env.FFMPEG_STATIC }}"
-          HEVC_PRESET="${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}"
-          HEVC_CRF="${{ steps.inputs.outputs.hevc_crf || '24' }}"
+          HEVC_PRESET="${{ steps.autodg.outputs.FINAL_PRESET || 'veryfast' }}"
+          HEVC_CRF="${{ steps.autodg.outputs.FINAL_CRF || '24' }}"
+          CHOSEN="${{ steps.inputs.outputs.hevc_preset || 'balanced' }}"
+          if [ "$CHOSEN" != "$HEVC_PRESET" ]; then
+            MSG="🔻 <b>Auto-downgrade!</b> Preset <code>$CHOSEN</code> estimasi &gt;5j50m, otomatis turun ke <code>$HEVC_PRESET</code> (CRF $HEVC_CRF) biar muat 6 jam."
+          else
+            MSG="🎚 Encode pakai preset <code>$HEVC_PRESET</code> (CRF $HEVC_CRF)."
+          fi
+          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py "$MSG" || true
           echo "🎞 Encoding HEVC 10-bit (preset=${HEVC_PRESET}, CRF ${HEVC_CRF}) dari original..."
           echo "📦 Original: $(ls -lh "$FILE" | awk '{print $5}')"
 
