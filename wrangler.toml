@@ -1,3 +1,7 @@
 name = "rusemeva"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "ORVELLA_KV"
+id = "318934f11f4c4db894a5bd03ca1c647b"
