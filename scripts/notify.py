@@ -372,10 +372,9 @@ elif job_status == "cancelled":
             f"⏹ <b>Encode dibatalkan.</b>\n\n"
             f"{id_line()}"
             f"📦 Source: <code>{filename}</code>\n"
-            f"ℹ️ Rekaman ASLI tetap utuh di GitHub release (tidak terhapus).\n"
+            f"ℹ️ Rekaman ASLI sudah selesai direkam & dikirim ke Telegram (cek file di chat Anda).\n"
+            f"ℹ️ Di GitHub TIDAK ada file video — release vault hanya berisi manifest .txt, dan source temp di release sudah dibersihkan otomatis.\n"
         )
-        if release_url:
-            msg += f"🔗 Unduh source: {release_url}\n"
         msg += f"🔗 Run encode: {run_url}"
     else:
         msg = (
