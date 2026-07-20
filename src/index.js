@@ -538,7 +538,7 @@ async function handleRecord(text, chatId, env) {
   // === #6 GUARD GANDA: blokir kalau ada run in_progress (rekam/encode) ===
   // Cek KV lock dulu (cepat), lalu GH API sbg otoritat.
   try {
-    const running = await checkActiveRuns(env);
+    const running = await checkActiveRuns(env, LOG);
     if (running.length > 0) {
       let msg = '⛔ <b>Masih ada proses berjalan.</b>\n\n';
       msg += `Tunggu sampai selesai / dibatalkan dulu:\n`;
@@ -928,10 +928,13 @@ async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, re
   };
 }
 
-async function checkActiveRuns(env) {
+async function checkActiveRuns(env, logFn) {
   try {
+    if (logFn) try { logFn('car: before ghApi'); } catch(_){}
     const resp = await ghApi(env, 'actions/runs?per_page=10');
+    if (logFn) try { logFn('car: ghApi status=' + resp.status); } catch(_){}
     const data = await resp.json();
+    if (logFn) try { logFn('car: json parsed runs=' + (data.workflow_runs||[]).length); } catch(_){}
     return (data.workflow_runs || []).filter(r =>
       r.status === 'in_progress' || r.status === 'queued' || r.status === 'pending');
   } catch (_) {
