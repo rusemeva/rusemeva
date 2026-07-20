@@ -641,6 +641,16 @@ async function handleStatus(chatId, env) {
       const elapsed = Math.round((Date.now() - new Date(run.created_at)) / 1000);
       msg += `• ${phase}\n`;
       msg += `  ⏱ ${formatDuration(elapsed)} · mulai ${created} WIB\n`;
+      // Tampilin run ID biar gak tebak-tebakan pas /cancel
+      msg += `  🆔 Run: <code>${run.id}</code>\n`;
+      // Coba resolve ORV ID dari KV (encode tulis run:<id> via /link)
+      let orvShown = '';
+      try {
+        const orvId = run.display_title?.match(/ORV-[a-z0-9-]+/i)?.[0]
+          || (await env.ORVELLA_KV.get(`run:${run.id}`));
+        if (orvId) orvShown = `  🏷 ORV: <code>${orvId}</code>\n`;
+      } catch (_) {}
+      if (orvShown) msg += orvShown;
       msg += `  🔗 ${run.html_url}\n`;
 
       // Kalau encode lagi jalan -> ambil progress % dari KV (di-push progress.py)
