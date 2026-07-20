@@ -652,8 +652,15 @@ async function handleRecord(text, chatId, env) {
     if (referer) msg += `🔗 Referer: <code>${escapeHtml(referer)}</code>\n`;
     if (probeRes) msg += `🖥 Sumber: ${probeRes}p${probeFpsHint ? ' @' + probeFpsHint + 'fps' : ''}\n`;
     msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
-    await sendMessage(env.BOT_TOKEN, chatId, msg);
-    LOG(`sent success msg orv=${orvId}`);
+    LOG(`before sendMessage success`);
+    try {
+      const st = await sendMessage(env.BOT_TOKEN, chatId, msg);
+      LOG(`sent success msg orv=${orvId} tg=${st}`);
+    } catch (e) {
+      LOG(`sendMessage THREW: ${e.message}`);
+      // fallback: kirim pesan pendek
+      try { await sendMessage(env.BOT_TOKEN, chatId, `✅ Rekaman dimulai! ID: ${orvId}`); } catch (_) {}
+    }
   } else {
     const errText = await trigResp.text();
     LOG(`GH not ok: ${errText.slice(0,200)}`);
