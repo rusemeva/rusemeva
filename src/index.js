@@ -106,6 +106,22 @@ export default {
         }
       }
 
+      // === Admin: test kirim pesan persis spt handleRecord sukses ===
+      if (request.method === 'GET' && url.pathname === '/_rectest2') {
+        const url = 'https://live.eu-north-1b.cf.dmcdn.net/sec2(x)/dm/3/x8qckyq/d/live-720.m3u8';
+        const msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
+          `🆔 ID: <code>ORV-TEST</code>\n` +
+          `🔗 URL: <code>${escapeHtml(url)}</code>\n` +
+          `⏱ Durasi: 36 menit\n📦 File: test.mp4\n⚙️ Encode: <b>Cepat (Default)</b> (veryfast, crf 24)\n` +
+          `☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.`;
+        try {
+          const st = await sendMessage(env.BOT_TOKEN, 2027652715, msg);
+          return new Response('sent status=' + st, { status: 200 });
+        } catch (e) {
+          return new Response('ERR: ' + e.message, { status: 500 });
+        }
+      }
+
       // === Admin: baca KV log (debug) ===
       if (request.method === 'GET' && url.pathname === '/_kv') {
         try {
