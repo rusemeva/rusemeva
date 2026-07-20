@@ -545,9 +545,10 @@ async function handleRecord(text, chatId, env) {
       for (const r of running.slice(0, 5)) {
         const wf = r.name || '';
         const phase = wf.includes('encode') ? '🔄 Encode HEVC' : (wf.includes('record') ? '🎬 Rekam' : wf);
-        msg += `• ${phase}\n  🔗 ${r.html_url}\n`;
+        const runId = r.id ? String(r.id) : '';
+        msg += `• ${phase}\n  🆔 Run ID: <code>${runId}</code>\n  🔗 ${r.html_url}\n`;
       }
-      msg += '\nGunakan /cancel untuk membatalkan, atau /status untuk detail.';
+      msg += '\nGunakan /cancel ' + (running[0].id ? String(running[0].id) : '<run_id>') + ' untuk membatalkan, atau /status untuk detail.';
       await sendMessage(env.BOT_TOKEN, chatId, msg);
       return new Response('OK');
     }
@@ -605,8 +606,11 @@ async function handleRecord(text, chatId, env) {
       await sendMessage(env.BOT_TOKEN, chatId,
         `❌ URL tidak bisa diakses (HTTP ${resp.status})\nPastikan link masih valid.`
       );
+      await resp.body?.cancel?.().catch(() => {});
       return new Response('OK');
     }
+    // Drain body biar subrequest connection gak ngegantung (Cloudflare)
+    await resp.body?.cancel?.().catch(() => {});
   } catch {
     await sendMessage(env.BOT_TOKEN, chatId, '❌ Gagal mengakses URL. Pastikan link benar.');
     return new Response('OK');
@@ -641,6 +645,8 @@ async function handleRecord(text, chatId, env) {
   LOG(`triggered orv=${orvId}`);
   const trigResp = await trig.resp; // fetch returns Promise -> await dulu
   LOG(`trigResp status=${trigResp.status}`);
+  // Drain body biar subrequest pool gak ke-lock (penyebab sendMessage hang)
+  await trigResp.text().catch(() => {});
 
   if (trigResp.ok) {
     let msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
