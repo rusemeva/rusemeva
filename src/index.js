@@ -53,6 +53,17 @@ export default {
         return setWebhook(env, request);
       }
 
+      // === Admin: test kirim pesan ke owner (debug bot gak respon) ===
+      if (request.method === 'GET' && url.pathname === '/_test') {
+        try {
+          const owner = 2027652715;
+          await sendMessage(env.BOT_TOKEN, owner, '✅ <b>TEST</b> — worker bisa kirim pesan. Webhook OK.');
+          return new Response('test sent', { status: 200 });
+        } catch (e) {
+          return new Response('test err: ' + e.message, { status: 500 });
+        }
+      }
+
       // === #7 Endpoint /rtcal GET: baca kalibrasi RT (realtime_x aktual, rata-rata histori) ===
       // encode.yml panggil GET ini buat dapat BASE_RT yg akurat.
       if (request.method === 'GET' && url.pathname === '/rtcal') {
