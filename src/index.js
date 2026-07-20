@@ -107,6 +107,25 @@ export default {
       }
 
       // === Admin: test kirim pesan persis spt handleRecord sukses ===
+      if (request.method === 'GET' && url.pathname === '/_rectest3') {
+        const turl = 'https://live.eu-north-1b.cf.dmcdn.net/sec2FINAL11/d/live-720.m3u8';
+        const estLine = `⏱ Estimasi: rekam 5 menit + encode ~8 menit (total ~13 menit)`;
+        const msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
+          `🆔 ID: <code>ORV-TEST3</code>\n` +
+          `🔗 URL: <code>${escapeHtml(turl)}</code>\n` +
+          `⏱ Durasi: 5 menit\n📦 File: test.mp4\n⚙️ Encode: <b>Cepat (Default)</b> (veryfast, crf 24)\n` +
+          `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
+        try {
+          const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: 2027652715, text: msg, parse_mode: 'HTML' })
+          });
+          const body = await r.text();
+          return new Response('status=' + r.status + ' :: ' + body, { status: 200 });
+        } catch (e) {
+          return new Response('ERR: ' + e.message, { status: 500 });
+        }
+      }
       if (request.method === 'GET' && url.pathname === '/_rectest2') {
         const url = 'https://live.eu-north-1b.cf.dmcdn.net/sec2(x)/dm/3/x8qckyq/d/live-720.m3u8';
         const msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
