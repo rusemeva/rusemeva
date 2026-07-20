@@ -47,7 +47,7 @@ jobs:
         id: inputs
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-              echo "m3u8_url=${{ github.event.client_payload.m3u8_url }}" >> $GITHUB_OUTPUT
+            echo "m3u8_url=${{ github.event.client_payload.m3u8_url }}" >> $GITHUB_OUTPUT
             echo "duration=${{ github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
             echo "chat_id=${{ github.event.client_payload.chat_id }}" >> $GITHUB_OUTPUT
             echo "human_duration=${{ github.event.client_payload.human_duration }}" >> $GITHUB_OUTPUT
