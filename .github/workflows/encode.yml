@@ -89,10 +89,23 @@ jobs:
           RAW="${{ steps.inputs.outputs.filename }}"
           echo "📥 Download original dari release temp: $TAG / $RAW"
           mkdir -p /tmp/orvella_dl
-          # Download SEMUA asset dari release temp (original utuh ATAU segment part-*)
-          gh release download "$TAG" --repo "${{ github.repository }}" --dir /tmp/orvella_dl \
-            && echo "✅ Download semua asset release temp" \
-            || echo "⚠️ gh release download gagal"
+          # Download SEMUA asset via gh api REST (lebih reliable dr 'gh release download'
+          # yang bisa gagal silent di gh 2.x). Loop tiap asset -> stream octet-stream.
+          API_URL="repos/${{ github.repository }}/releases/tags/$TAG"
+          ASSET_IDS=$(gh api "$API_URL" --jq '.assets[].id')
+          if [ -z "$ASSET_IDS" ]; then
+            echo "⚠️ Release temp $TAG tidak punya asset sama sekali!"
+            echo "📂 (mungkin upload di record.yml gagal — cek log record run)"
+            exit 1
+          fi
+          for aid in $ASSET_IDS; do
+            fname=$(gh api "repos/${{ github.repository }}/releases/assets/$aid" --jq '.name')
+            echo "  ⬇️  $fname"
+            gh api "repos/${{ github.repository }}/releases/assets/$aid" \
+              -H "Accept: application/octet-stream" > "/tmp/orvella_dl/$fname"
+            echo "     -> $(stat -c%s "/tmp/orvella_dl/$fname" 2>/dev/null || echo 0) bytes"
+          done
+          echo "✅ Download semua asset release temp"
           echo "📂 Isi download:"
           ls -lh /tmp/orvella_dl
 
