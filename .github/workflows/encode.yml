@@ -296,7 +296,8 @@ jobs:
             MAX=$((2*1024*1024*1024))
             if [ "$SIZE" -gt "$MAX" ]; then
               echo "📦 HEVC $((SIZE/1024/1024/1024)) GB > 2GB -> split -b 1990M"
-              split -b 1990M -d "$HEVC_FILE" "${HEVC_FILE}.part"
+              # Format part-000 (sama kayak record.yml yg terbukti jalan)
+              split -b 1990M --numeric-suffixes=0 --suffix-length=3 "$HEVC_FILE" "${HEVC_FILE}.part-"
               # Hapus file asli biar notify gak kirim utuh
               rm -f "$HEVC_FILE"
               echo "HEVC_SPLIT=1" >> $GITHUB_ENV
