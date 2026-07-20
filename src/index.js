@@ -934,7 +934,8 @@ async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, re
         body: JSON.stringify({
             event_type: 'record-request',
             client_payload: payload
-          })
+          }),
+        signal: AbortSignal.timeout(15000)
       }
     ),
     orvId,
