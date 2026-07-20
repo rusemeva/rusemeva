@@ -572,12 +572,6 @@ async function handleRecord(text, chatId, env) {
   // Ambil profil encode aktif
   const profileKey = await getProfile(env, chatId);
   const profile = ENCODE_PROFILES[profileKey];
-    // 720p(1280) baseline 1.0; 1080p(1920) ~1.8x lebih lambat; 480p ~0.6x
-    const ratio = (w * w) / (1280 * 1280); // area piksel relatif thd 720p
-    // clamp biar gak meledak
-    const r = Math.max(0.5, Math.min(3.5, ratio));
-    return baseFactor / r;
-  }
 
   // Validate URL
   if (!url.startsWith('http')) {
