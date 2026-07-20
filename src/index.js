@@ -645,7 +645,7 @@ async function handleRecord(text, chatId, env, ctx) {
       `⚙️ Encode: <b>${profile.label}</b> (${profile.preset}, crf ${profile.crf})\n`;
     if (referer) msg += `🔗 Referer: <code>${escapeHtml(referer)}</code>\n`;
     if (probeRes) msg += `🖥 Sumber: ${probeRes}p${probeFpsHint ? ' @' + probeFpsHint + 'fps' : ''}\n`;
-    msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
+    msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel &lt;id&gt; kalau mau membatalkan.`;
     LOG(`before sendMessage success`);
     const finalMsg = msg;
     const fid = orvId;
