@@ -45,6 +45,16 @@ export default {
     const response = new Response('OK');
 
     try {
+      const url = new URL(request.url);
+
+      // === #7 Endpoint /rtcal GET: baca kalibrasi RT (realtime_x aktual, rata-rata histori) ===
+      // encode.yml panggil GET ini buat dapat BASE_RT yg akurat.
+      if (request.method === 'GET' && url.pathname === '/rtcal') {
+        const preset = url.searchParams.get('preset') || '';
+        const raw = await env.ORVELLA_KV.get(`orv:rtcal:${preset}`);
+        return new Response(raw || '', { status: 200 });
+      }
+
       if (request.method === 'POST') {
         const url = new URL(request.url);
 
@@ -93,39 +103,7 @@ export default {
           }
         }
 
-        if (url.pathname === '/rtcal') {
-          try {
-            if (request.method === 'GET') {
-              const preset = url.searchParams.get('preset') || '';
-              const raw = await env.ORVELLA_KV.get(`orv:rtcal:${preset}`);
-              return new Response(raw || '', { status: 200 });
-            }
-            if (request.method === 'POST') {
-              const body = await request.json();
-              const preset = (body.preset || '').toString();
-              const rt = parseFloat(body.rt);
-              const secret = (body.secret || '').toString();
-              if (env.PROGRESS_SECRET && secret !== env.PROGRESS_SECRET) {
-                return new Response('forbidden', { status: 403 });
-              }
-              if (preset && !isNaN(rt) && rt > 0) {
-                // Simpan realtime_x AKTUAL (bukan persen) biar encode.yml bisa pakai
-                // langsung sebagai BASE_RT. Rata-rata dengan histori biar stabil.
-                const prev = parseFloat(await env.ORVELLA_KV.get(`orv:rtcal:${preset}`) || '');
-                let avg = rt;
-                if (!isNaN(prev) && prev > 0) {
-                  avg = (prev + rt) / 2;
-                }
-                await env.ORVELLA_KV.put(`orv:rtcal:${preset}`, avg.toFixed(4), { expirationTtl: 60*86400 });
-                return new Response(`ok avg=${avg.toFixed(4)}`, { status: 200 });
-              }
-              return new Response('bad', { status: 400 });
-            }
-            return new Response('method', { status: 405 });
-          } catch (_) {
-            return new Response('err', { status: 500 });
-          }
-        }
+        // (handler /rtcal sudah dipindah ke awal fetch: GET baca kalibrasi, POST simpan)
 
         const update = await request.json();
 
