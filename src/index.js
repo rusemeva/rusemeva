@@ -482,7 +482,8 @@ async function handleSettingSelect(text, chatId, env) {
 
 async function handleRecord(text, chatId, env) {
   const parts = text.split(/\s+/);
-  const LOG = (s) => { try { env.ORVELLA_KV.put('orv:rec-log', `${new Date().toISOString()} ${s}`, { expirationTtl: 3600 }); } catch (_) {} };
+  let _n = 0;
+  const LOG = (s) => { try { _n++; env.ORVELLA_KV.put(`orv:rec-${_n}`, `${new Date().toISOString()} ${s}`, { expirationTtl: 3600 }); } catch (_) {} };
   LOG(`start chat=${chatId} parts=${parts.length}`);
 
   if (parts.length < 2) {
