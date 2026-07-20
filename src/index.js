@@ -473,6 +473,7 @@ async function handleRecord(text, chatId, env) {
   }
 
   let url = parts[1];
+  LOG(`url set: ${url.slice(0,30)}`);
 
   // Extract optional --referer flag
   let referer = '';
@@ -482,12 +483,14 @@ async function handleRecord(text, chatId, env) {
     // Remove --referer and its value from parts for duration parsing
     parts.splice(refIdx, 2);
   }
+  LOG(`referer=${referer}`);
 
   // Parse duration: /record <url> [duration]
   let duration = 300; // default 5 menit
   if (parts.length >= 3) {
     const durStr = parts.slice(2).join(''); // join for "1h30m" without spaces
     const parsed = parseDuration(durStr);
+    LOG(`durStr=${durStr} parsed=${parsed}`);
     if (parsed === null) {
       await sendMessage(env.BOT_TOKEN, chatId,
         '❌ Format durasi salah.\n\n' +
