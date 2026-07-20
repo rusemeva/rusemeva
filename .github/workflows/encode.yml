@@ -234,7 +234,7 @@ jobs:
               if [ "$pct" != "$LAST_PCT" ]; then
                 LAST_PCT=$pct
                 echo "🔄 HEVC encode ${pct}%"
-                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id python3 scripts/progress.py progress "$pct" || true
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state python3 scripts/progress.py progress "$pct" || true
               fi
             fi
           done
