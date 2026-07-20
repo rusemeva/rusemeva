@@ -337,7 +337,7 @@ async function handleRecord(text, chatId, env) {
 
 async function handleStatus(chatId, env) {
   try {
-    const resp = await ghApi(env, `actions/runs?per_page=5`);
+    const resp = await ghApi(env, `actions/runs?per_page=8`);
     const data = await resp.json();
 
     if (!data.workflow_runs?.length) {
@@ -357,11 +357,42 @@ async function handleStatus(chatId, env) {
       return new Response('OK');
     }
 
-    let msg = `⏳ <b>${active.length} rekaman aktif:</b>\n\n`;
+    let msg = `⏳ <b>${active.length} proses aktif:</b>\n\n`;
     for (const run of active) {
-      const created = new Date(run.created_at).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+      const wf = run.name || '';
+      const phase = wf.includes('encode') ? '🔄 Encode HEVC' : (wf.includes('record') ? '🎬 Rekam' : '⚙️ ' + wf);
+      const created = new Date(run.created_at).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
       const elapsed = Math.round((Date.now() - new Date(run.created_at)) / 1000);
-      msg += `• ${run.status} — ${formatDuration(elapsed)} — ${created}\n`;
+      msg += `• ${phase}\n`;
+      msg += `  ⏱ ${formatDuration(elapsed)} · mulai ${created} WIB\n`;
+      msg += `  🔗 ${run.html_url}\n`;
+
+      // Kalau encode lagi jalan -> ambil progress % dari log terakhir
+      if (wf.includes('encode')) {
+        try {
+          const logResp = await ghApi(env, `actions/runs/${run.id}/logs`, 'GET');
+          // GitHub balikin zip; kita cuma butuh tail. Pakai API check + parse sederhana:
+          // fallback: cek artifact/log text lewat endpoint jobs.
+          const jobsResp = await ghApi(env, `actions/runs/${run.id}/jobs?per_page=5`);
+          const jobs = await jobsResp.json();
+          const job = jobs.workflow_runs?.jobs?.[0] || jobs.jobs?.[0];
+          if (job?.steps) {
+            const enc = job.steps.find(s => s.name && s.name.toLowerCase().includes('encode to hevc'));
+            if (enc) {
+              const st = enc.status;
+              const em = enc.conclusion || '';
+              let pct = '';
+              if (st === 'in_progress') pct = ' ⏳ (berjalan)';
+              else if (st === 'completed' && em === 'success') pct = ' ✅';
+              else if (st === 'completed' && em === 'failure') pct = ' ❌';
+              msg += `  📊 Status: ${st}${pct}\n`;
+            }
+          }
+        } catch (_) {
+          // ignore: progress detail gak krusial
+        }
+      }
+      msg += `\n`;
     }
     await sendMessage(env.BOT_TOKEN, chatId, msg);
   } catch (err) {
