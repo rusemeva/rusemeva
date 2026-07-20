@@ -93,6 +93,19 @@ export default {
         }
       }
 
+      // === Admin: test GitHub API dari worker ===
+      if (request.method === 'GET' && url.pathname === '/_gh') {
+        try {
+          const r = await fetch(`https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/actions/runs?per_page=1`, {
+            headers: { 'Authorization': `token ${env.GH_TOKEN}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'orvella-vault' }
+          });
+          const txt = await r.text();
+          return new Response(`status=${r.status} len=${txt.length} :: ${txt.slice(0,200)}`, { status: 200 });
+        } catch (e) {
+          return new Response('GH ERR: ' + e.message, { status: 500 });
+        }
+      }
+
       // === Admin: baca KV log (debug) ===
       if (request.method === 'GET' && url.pathname === '/_kv') {
         try {
