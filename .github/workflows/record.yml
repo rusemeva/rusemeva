@@ -398,6 +398,56 @@ jobs:
             echo "SEGMENTED=0" >> $GITHUB_ENV
           fi
 
+      - name: Upload ORIGINAL ke GitHub Release TEMP + trigger encode terpisah
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAT_ID: ${{ steps.inputs.outputs.chat_id }}
+          FILENAME: ${{ steps.fname.outputs.filename }}
+          HUMAN_DUR: ${{ steps.inputs.outputs.human_duration }}
+          DURATION: ${{ steps.inputs.outputs.duration }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          HEVC_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
+          HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
+        run: |
+          set +e
+          FILE="${{ steps.fname.outputs.filename }}"
+          TAG="orvella-encode-${{ github.run_id }}"
+          TEMP_NOTES="Orvella encode temp source (dihapus setelah encode). JANGAN dihapus manual sebelum encode selesai."
+          # Buat release temp (kosong dulu)
+          gh release create "$TAG" --repo "${{ github.repository }}" \
+            --title "Orvella Encode Temp ${{ github.run_id }}" \
+            --notes "$TEMP_NOTES" 2>/dev/null || \
+          gh release create "$TAG" --repo "${{ github.repository }}" \
+            --title "Orvella Encode Temp ${{ github.run_id }}" --notes "$TEMP_NOTES"
+          echo "📦 Temp release: $TAG"
+          # Upload source: kalau ter-segment, upload part-*.mp4; else upload file utuh
+          if [ "${SEGMENTED:-0}" = "1" ] && ls segments/part-*.mp4 >/dev/null 2>&1; then
+            echo "🧩 Upload segment part-*.mp4 ke temp..."
+            for f in segments/part-*.mp4; do
+              gh release upload "$TAG" --repo "${{ github.repository }}" "$f" --clobber 2>/dev/null \
+                && echo "  ✅ $f" || echo "  ⚠️ gagal $f"
+            done
+          else
+            echo "📤 Upload original utuh ($FILE) ke temp..."
+            gh release upload "$TAG" --repo "${{ github.repository }}" "$FILE" --clobber 2>/dev/null \
+              && echo "  ✅ $FILE" || echo "  ⚠️ gagal upload original"
+          fi
+          # Trigger orvella-encode
+          echo "🚀 Trigger orvella-encode..."
+          gh api repos/${{ github.repository }}/dispatches \
+            -f event_type=encode-request \
+            -f "client_payload[filename]=${FILE}" \
+            -f "client_payload[chat_id]=${CHAT_ID}" \
+            -f "client_payload[human_duration]=${HUMAN_DUR}" \
+            -f "client_payload[duration]=${DURATION}" \
+            -f "client_payload[release_tag]=${TAG}" \
+            -f "client_payload[hevc_preset]=${HEVC_PRESET}" \
+            -f "client_payload[hevc_crf]=${HEVC_CRF}" \
+            && echo "✅ orvella-encode di-trigger" \
+            || echo "⚠️ Gagal trigger (cek permission actions:write)"
+
       - name: Buat .txt (update log kecil) + Release ringan
         if: success()
         env:
