@@ -555,35 +555,20 @@ async function handleRecord(text, chatId, env) {
   } catch (_) { /* kalau GH API error, biarkan lanjut (fail-open) */ }
   LOG(`guard passed duration=${duration} url=${url.slice(0,40)}`);
 
-  // === #1 PROBE m3u8: ambil resolusi asli buat estimasi AKURAT ===
-  // Worker fetch playlist, cari #EXT-X-STREAM-INF:RESOLUTION=WxH (atau variant).
-  // Map resolusi -> faktor realtime (1080p60 jauh lebih berat dr 720p60).
+  // === #1 PROBE m3u8: di-skip di worker (best-effort, jangan block handler).
+  // Estimasi pakai default; validasi link dilakukan oleh GH action.
   let probeRes = '';
   let probeFpsHint = '';
-  try {
-    const m3u8Resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': 'Mozilla/5.0', ...(referer ? { 'Referer': referer } : {}) } });
-    if (m3u8Resp.ok) {
-      const txt = await m3u8Resp.text();
-      // Cari resolusi tertinggi di STREAM-INF
-      const resMatch = txt.match(/RESOLUTION=(\d+)x(\d+)/g);
-      if (resMatch) {
-        let best = 0;
-        for (const m of resMatch) {
-          const w = parseInt(m.match(/(\d+)x/)[1], 10);
-          if (w > best) best = w;
-        }
-        probeRes = String(best);
-      }
-      // Framerate hint (FRAME-RATE=60)
-      const fr = txt.match(/FRAME-RATE=(\d+(\.\d+)?)/);
-      if (fr) probeFpsHint = fr[1];
-    }
-  } catch (_) { /* probe gagal = fallback estimasi default */ }
 
-  // Faktor realtime berdasarkan resolusi (720p baseline 2.5x; makin tinggi makin lambat)
-  function rtFactorForRes(resStr, baseFactor) {
-    const w = parseInt(resStr, 10) || 1280;
+  // Validate URL (cepat, gak network)
+  if (!url.startsWith('http')) {
+    await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
+    return new Response('OK');
+  }
+
+  // Ambil profil encode aktif
+  const profileKey = await getProfile(env, chatId);
+  const profile = ENCODE_PROFILES[profileKey];
     // 720p(1280) baseline 1.0; 1080p(1920) ~1.8x lebih lambat; 480p ~0.6x
     const ratio = (w * w) / (1280 * 1280); // area piksel relatif thd 720p
     // clamp biar gak meledak
@@ -597,22 +582,9 @@ async function handleRecord(text, chatId, env) {
     return new Response('OK');
   }
 
-  // Check URL reachable
-  try {
-    const headers = { method: 'HEAD', signal: AbortSignal.timeout(10000) };
-    if (referer) headers.headers = { 'Referer': referer };
-    const resp = await fetch(url, headers);
-    if (!resp.ok) {
-      await sendMessage(env.BOT_TOKEN, chatId,
-        `❌ URL tidak bisa diakses (HTTP ${resp.status})\nPastikan link masih valid.`
-      );
-      await resp.body?.cancel?.().catch(() => {});
-      return new Response('OK');
-    }
-    // Drain body biar subrequest connection gak ngegantung (Cloudflare)
-    await resp.body?.cancel?.().catch(() => {});
-  } catch {
-    await sendMessage(env.BOT_TOKEN, chatId, '❌ Gagal mengakses URL. Pastikan link benar.');
+  // Validate URL (cepat, gak network — jangan block handler)
+  if (!url.startsWith('http')) {
+    await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
     return new Response('OK');
   }
 
