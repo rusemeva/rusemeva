@@ -212,8 +212,8 @@ jobs:
           SRC_DUR_INT="${{ steps.inputs.outputs.duration }}"
           [ -z "$SRC_DUR_INT" ] || [ "$SRC_DUR_INT" -le 0 ] 2>/dev/null && SRC_DUR_INT=60
 
-          python3 scripts/progress.py start || true
-          LAST_PCT=-1; NEXT_SEND=0
+          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id python3 scripts/progress.py start || true
+          LAST_PCT=-1
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
             -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
@@ -223,11 +223,11 @@ jobs:
               [ "$ms" -gt 0 ] 2>/dev/null || continue
               cur=$(( ms / 1000000 ))
               pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
-              now=$(date +%s)
-              if [ "$pct" -ge "$((LAST_PCT + 10))" ] && [ "$now" -ge "$NEXT_SEND" ]; then
-                LAST_PCT=$(( (pct / 10) * 10 )); NEXT_SEND=$(( now + 5 ))
-                echo "🔄 HEVC encode ${LAST_PCT}%"
-                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id python3 scripts/progress.py progress "$LAST_PCT" || true
+              # Forward tiap perubahan %, progress.py yg akan throttle (5% / 5s)
+              if [ "$pct" != "$LAST_PCT" ]; then
+                LAST_PCT=$pct
+                echo "🔄 HEVC encode ${pct}%"
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id python3 scripts/progress.py progress "$pct" || true
               fi
             fi
           done

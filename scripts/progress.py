@@ -1,4 +1,4 @@
-import json, os, sys, urllib.request
+import json, os, sys, urllib.request, time
 
 API = "{}/bot{}".format(
     os.environ.get("TG_API_URL", "http://localhost:8081").rstrip("/"),
@@ -7,8 +7,15 @@ API = "{}/bot{}".format(
 CHAT = os.environ.get("CHAT_ID", "")
 MSG_FILE = os.environ.get("PROGRESS_MSG_FILE", "/tmp/orvella_progress_msg_id")
 FILENAME = os.environ.get("FILENAME", "")
-# Label fase: "Rekam" atau "Encoding HEVC 10-bit" (default HEVC biar kompatibel)
 PHASE_LABEL = os.environ.get("PHASE_LABEL", "Encoding HEVC 10-bit")
+# State file menyimpan last_pct,last_time agar throttling persist antar pemanggilan
+# (progress.py dijalankan sebagai proses baru tiap tick oleh encode.yml)
+STATE_FILE = os.environ.get("PROGRESS_STATE_FILE", "/tmp/orvella_progress_state")
+
+# --- Konstanta throttle ---
+STEP_PCT = 5        # kirim update tiap naik 5% (-> 20 update maksimal per video)
+MIN_INTERVAL = 5    # jeda minimum 5 detik antar edit (anti rate-limit Telegram 1x/detik)
+MILESTONE = 100     # selalu kirim saat mencapai 100%
 
 
 def req(method, payload):
@@ -46,9 +53,26 @@ def edit(text):
 
 
 def build_bar(pct):
-    filled = pct // 10
-    empty = 10 - filled
+    filled = pct // 5
+    if filled > 20:
+        filled = 20
+    empty = 20 - filled
     return "█" * filled + "░" * empty
+
+
+def read_state():
+    try:
+        parts = open(STATE_FILE).read().strip().split(",")
+        return int(parts[0]), float(parts[1])
+    except Exception:
+        return -1, 0.0
+
+
+def write_state(pct, t):
+    try:
+        open(STATE_FILE, "w").write("{},{}".format(pct, t))
+    except Exception:
+        pass
 
 
 if len(sys.argv) < 2:
@@ -56,7 +80,6 @@ if len(sys.argv) < 2:
     sys.exit(1)
 
 mode = sys.argv[1]
-
 ICON = "🔄" if mode in ("start", "progress") else "✅"
 
 if mode == "start":
@@ -66,13 +89,28 @@ if mode == "start":
     mid = r.get("result", {}).get("message_id")
     if mid:
         open(MSG_FILE, "w").write(str(mid))
+    write_state(0, time.time())
     print("progress start msg_id={}".format(mid))
 
 elif mode == "progress":
     pct = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-    text = "{} <b>{}</b>\n\n{} {}%\n📦 <code>{}</code>".format(
-        ICON, PHASE_LABEL, build_bar(pct), pct, FILENAME)
-    edit(text)
+    last_pct, last_time = read_state()
+    now = time.time()
+    send = False
+    if pct >= MILESTONE:
+        send = True
+    elif pct >= last_pct + STEP_PCT:
+        send = True
+    # jeda minimum agar tidak langgar rate-limit (kecuali 100%)
+    if send and pct < MILESTONE and last_pct != -1 and (now - last_time) < MIN_INTERVAL:
+        send = False
+    if send:
+        text = "{} <b>{}</b>\n\n{} {}%\n📦 <code>{}</code>".format(
+            ICON, PHASE_LABEL, build_bar(pct), pct, FILENAME)
+        edit(text)
+        write_state(pct, now)
+    else:
+        print("progress skip {}% (last={})".format(pct, last_pct))
 
 elif mode == "done":
     text = sys.argv[2].replace("\\n", "\n") if len(sys.argv) > 2 else \
