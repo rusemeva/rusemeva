@@ -974,7 +974,8 @@ async function sendMessage(token, chatId, text, replyMarkup = null) {
     const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000)
     });
     lastStatus = r.status;
     // Log kalau gagal (debug)
