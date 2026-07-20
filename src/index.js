@@ -47,6 +47,12 @@ export default {
     try {
       const url = new URL(request.url);
 
+      // === Admin: set webhook Telegram ke worker ini (fix bot "gak respon") ===
+      // Panggil: GET /_setwh?k=SECRET  -> set webhook ke origin worker.
+      if (request.method === 'GET' && url.pathname === '/_setwh') {
+        return setWebhook(env, request);
+      }
+
       // === #7 Endpoint /rtcal GET: baca kalibrasi RT (realtime_x aktual, rata-rata histori) ===
       // encode.yml panggil GET ini buat dapat BASE_RT yg akurat.
       if (request.method === 'GET' && url.pathname === '/rtcal') {
@@ -220,6 +226,33 @@ export default {
     }
   }
 };
+
+// ============ ADMIN: SET WEBHOOK ============
+// Dipakai sekali untuk menghubungkan bot ke worker (bot "gak respon" = webhook belum set).
+async function setWebhook(env, request) {
+  const url = new URL(request.url);
+  const k = url.searchParams.get('k') || '';
+  if (env.PROGRESS_SECRET && k !== env.PROGRESS_SECRET) {
+    return new Response('forbidden', { status: 403 });
+  }
+  const origin = url.origin; // https://rusemeva.rusemeva.workers.dev
+  const whUrl = `${origin}/`;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: whUrl, allowed_updates: ['message', 'edited_message', 'callback_query'] })
+    });
+    const j = await r.json();
+    // Verifikasi
+    const info = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`).then(x => x.json());
+    return new Response(JSON.stringify({ set: j, info: info }, null, 2), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (e) {
+    return new Response('err: ' + e.message, { status: 500 });
+  }
+}
 
 // ============ SETTING (encode profile) ============
 
