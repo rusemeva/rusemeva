@@ -47,133 +47,18 @@ export default {
     try {
       const url = new URL(request.url);
 
-      // === LOG: catat tiap request ke KV (debug bot gak respon) ===
-      try {
-        const bodyPreview = request.method === 'POST'
-          ? (await request.clone().text()).slice(0, 300)
-          : url.pathname;
-        ctx.waitUntil(env.ORVELLA_KV.put('orv:lastreq', `${new Date().toISOString()} ${request.method} ${url.pathname} :: ${bodyPreview}`, { expirationTtl: 3600 }));
-      } catch (_) {}
-
-      // === Admin: set webhook Telegram ke worker ini (fix bot "gak respon") ===
-      // Panggil: GET /_setwh?k=SECRET  -> set webhook ke origin worker.
-      if (request.method === 'GET' && url.pathname === '/_setwh') {
-        return setWebhook(env, request);
-      }
-
-      // === Admin: test kirim pesan ke owner (debug bot gak respon) ===
-      if (request.method === 'GET' && url.pathname === '/_test') {
-        try {
-          const owner = 2027652715;
-          await sendMessage(env.BOT_TOKEN, owner, '✅ <b>TEST</b> — worker bisa kirim pesan. Webhook OK.');
-          return new Response('test sent', { status: 200 });
-        } catch (e) {
-          return new Response('test err: ' + e.message, { status: 500 });
+      if (request.method === 'GET') {
+        const url = new URL(request.url);
+        // === #7 Endpoint /rtcal GET: baca kalibrasi RT ===
+        if (url.pathname === '/rtcal') {
+          const preset = url.searchParams.get('preset') || '';
+          const raw = await env.ORVELLA_KV.get(`orv:rtcal:${preset}`);
+          return new Response(raw || '', { status: 200 });
         }
-      }
-
-      // === Admin: cek bot identity (debug) ===
-      if (request.method === 'GET' && url.pathname === '/_me') {
-        try {
-          const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`);
-          const j = await r.json();
-          return new Response(JSON.stringify(j), { status: 200, headers: { 'Content-Type': 'application/json' } });
-        } catch (e) {
-          return new Response('err: ' + e.message, { status: 500 });
-        }
-      }
-
-      // === Admin: test /record handler langsung (debug) ===
-      if (request.method === 'GET' && url.pathname === '/_rectest') {
-        try {
-          await handleRecord('/record https://example.com/test.m3u8 90m', 2027652715, env, ctx);
-          return new Response('record handler done (no throw)', { status: 200 });
-        } catch (e) {
-          return new Response('record handler THREW: ' + e.message + '\n' + (e.stack||''), { status: 500 });
-        }
-      }
-
-      // === Admin: test GitHub API dari worker ===
-      if (request.method === 'GET' && url.pathname === '/_gh') {
-        try {
-          const r = await fetch(`https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/actions/runs?per_page=1`, {
-            headers: { 'Authorization': `token ${env.GH_TOKEN}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'orvella-vault' }
-          });
-          const txt = await r.text();
-          return new Response(`status=${r.status} len=${txt.length} :: ${txt.slice(0,200)}`, { status: 200 });
-        } catch (e) {
-          return new Response('GH ERR: ' + e.message, { status: 500 });
-        }
-      }
-
-      // === Admin: test kirim pesan persis spt handleRecord sukses ===
-      if (request.method === 'GET' && url.pathname === '/_rectest3') {
-        const turl = 'https://live.eu-north-1b.cf.dmcdn.net/sec2FINAL11/d/live-720.m3u8';
-        const estLine = `⏱ Estimasi: rekam 5 menit + encode ~8 menit (total ~13 menit)`;
-        const msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
-          `🆔 ID: <code>ORV-TEST3</code>\n` +
-          `🔗 URL: <code>${escapeHtml(turl)}</code>\n` +
-          `⏱ Durasi: 5 menit\n📦 File: test.mp4\n⚙️ Encode: <b>Cepat (Default)</b> (veryfast, crf 24)\n` +
-          `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
-        try {
-          const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: 2027652715, text: msg, parse_mode: 'HTML' })
-          });
-          const body = await r.text();
-          return new Response('status=' + r.status + ' :: ' + body, { status: 200 });
-        } catch (e) {
-          return new Response('ERR: ' + e.message, { status: 500 });
-        }
-      }
-      if (request.method === 'GET' && url.pathname === '/_rectest2') {
-        const url = 'https://live.eu-north-1b.cf.dmcdn.net/sec2(x)/dm/3/x8qckyq/d/live-720.m3u8';
-        const msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
-          `🆔 ID: <code>ORV-TEST</code>\n` +
-          `🔗 URL: <code>${escapeHtml(url)}</code>\n` +
-          `⏱ Durasi: 36 menit\n📦 File: test.mp4\n⚙️ Encode: <b>Cepat (Default)</b> (veryfast, crf 24)\n` +
-          `☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.`;
-        try {
-          const st = await sendMessage(env.BOT_TOKEN, 2027652715, msg);
-          return new Response('sent status=' + st, { status: 200 });
-        } catch (e) {
-          return new Response('ERR: ' + e.message, { status: 500 });
-        }
-      }
-
-      // === Admin: getWebhookInfo ===
-      if (request.method === 'GET' && url.pathname === '/_whinfo') {
-        try {
-          const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`);
-          const j = await r.json();
-          return new Response(JSON.stringify(j, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
-        } catch (e) {
-          return new Response('ERR: ' + e.message, { status: 500 });
-        }
-      }
-
-      // === Admin: baca KV log (debug) ===
-      if (request.method === 'GET' && url.pathname === '/_kv') {
-        try {
-          const key = url.searchParams.get('k') || 'orv:lastreq';
-          const v = await env.ORVELLA_KV.get(key);
-          return new Response(v || '(empty)', { status: 200 });
-        } catch (e) {
-          return new Response('err: ' + e.message, { status: 500 });
-        }
-      }
-
-      // === #7 Endpoint /rtcal GET: baca kalibrasi RT (realtime_x aktual, rata-rata histori) ===
-      // encode.yml panggil GET ini buat dapat BASE_RT yg akurat.
-      if (request.method === 'GET' && url.pathname === '/rtcal') {
-        const preset = url.searchParams.get('preset') || '';
-        const raw = await env.ORVELLA_KV.get(`orv:rtcal:${preset}`);
-        return new Response(raw || '', { status: 200 });
       }
 
       if (request.method === 'POST') {
         const url = new URL(request.url);
-
         // === #2 Endpoint /progress: progress.py push % encode ke sini -> simpan KV ===
         if (url.pathname === '/progress') {
           try {
@@ -505,7 +390,7 @@ async function handleSettingSelect(text, chatId, env) {
 async function handleRecord(text, chatId, env, ctx) {
   const parts = text.split(/\s+/);
   let _n = 0;
-  const LOG = (s) => { try { _n++; env.ORVELLA_KV.put(`orv:rec-${_n}`, `${new Date().toISOString()} ${s}`, { expirationTtl: 3600 }); } catch (_) {} };
+  const LOG = () => {};
   LOG(`start chat=${chatId} parts=${parts.length}`);
 
   if (parts.length < 2) {
@@ -594,13 +479,6 @@ async function handleRecord(text, chatId, env, ctx) {
   const profile = ENCODE_PROFILES[profileKey];
 
   // Validate URL
-  if (!url.startsWith('http')) {
-    await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
-    return new Response('OK');
-  }
-  LOG(`url validated`);
-
-  // Validate URL (cepat, gak network — jangan block handler)
   if (!url.startsWith('http')) {
     await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
     return new Response('OK');
