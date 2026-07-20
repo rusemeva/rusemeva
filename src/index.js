@@ -938,6 +938,7 @@ async function checkActiveRuns(env, logFn) {
     return (data.workflow_runs || []).filter(r =>
       r.status === 'in_progress' || r.status === 'queued' || r.status === 'pending');
   } catch (_) {
+    if (logFn) try { logFn('car: CAUGHT err, return []'); } catch(_){}
     return [];
   }
 }
