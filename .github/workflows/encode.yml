@@ -209,6 +209,30 @@ jobs:
           echo "FINAL_PRESET=$FINAL" >> $GITHUB_OUTPUT
           echo "FINAL_CRF=$FINAL_CRF" >> $GITHUB_OUTPUT
 
+      # === #5 DISK WATCHDOG: cancel run kalau disk runner >90% penuh ===
+      # Encode file besar bisa nyangkut / gagal kalau disk penuh. Lebih baik
+      # dibatalkan + dilaporkan daripada timeout 6 jam sia-sia.
+      - name: Disk watchdog — cek ruang sebelum encode
+        if: success()
+        continue-on-error: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ steps.inputs.outputs.chat_id }}
+          TG_API_URL: ${{ secrets.TG_API_URL || 'http://localhost:8081' }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
+        run: |
+          USE=$(df -h /tmp | awk 'NR==2{gsub("%","",$5); print $5}')
+          echo "💽 Disk /tmp terpakai: ${USE}%"
+          if [ "${USE:-0}" -ge 90 ]; then
+            echo "🚨 Disk >90% penuh — batalkan run biar gak timeout sia-sia"
+            MSG="🚨 <b>Disk runner penuh (${USE}%)</b> — encode dibatalkan otomatis.\n\n🆔 ID: <code>${ORV_ID}</code>\nℹ️ Coba lagi nanti (runner GitHub akan di-reset)."
+            CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py "$MSG" || true
+            gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel -X POST || true
+            exit 1
+          fi
+          echo "✅ Ruang disk cukup."
+
       - name: Encode to HEVC 10-bit (dari original, full 6 jam)
         id: hevc
         if: success()
@@ -220,6 +244,9 @@ jobs:
           FILENAME: ${{ steps.inputs.outputs.filename }}
           DURATION_SEC: ${{ steps.inputs.outputs.duration }}
           TG_API_URL: ${{ secrets.TG_API_URL || 'http://localhost:8081' }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
+          WORKER_URL: ${{ secrets.WORKER_URL || 'https://rusemeva.rusemeva.workers.dev' }}
+          PROGRESS_SECRET: ${{ secrets.PROGRESS_SECRET || '' }}
         run: |
           FILE="${{ steps.dl.outputs.ORIG_FILE }}"
           HEVC_FILE="${FILE%.mp4}-h265-10bit.mp4"
@@ -276,6 +303,30 @@ jobs:
             [ -n "$HCV" ] && echo "HEVC_VCODEC=$HCV" >> $GITHUB_ENV
             HBR=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null|head -1)
             case "$HBR" in ''|*[!0-9]*) ;; *) echo "HEVC_VBITRATE=$(awk "BEGIN{printf \"%.1f Mbps\", ${HBR}/1000000}")" >> $GITHUB_ENV ;; esac
+            # === #4 VERIFIKASI AUDIO: pastikan HEVC punya stream audio ===
+            # x265 cuma encode video; -c:a copy harusnya salin audio. Cek biar gak ke-drop.
+            AUD=$(ffprobe -v error -select_streams a -show_entries stream=index -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
+            if [ -z "$AUD" ]; then
+              echo "🔇 HEVC TIDAK punya audio stream — re-mux dari original..."
+              TMP_REMUX="${HEVC_FILE%.mp4}.remux.mp4"
+              "$FFMPEG_STATIC" -hide_banner -y -i "$HEVC_FILE" -i "$FILE" \
+                -map 0:v:0 -map 1:a? -c copy "$TMP_REMUX" 2>/dev/null || true
+              if [ -s "$TMP_REMUX" ]; then
+                AUD2=$(ffprobe -v error -select_streams a -show_entries stream=index -of default=noprint_wrappers=1:nokey=1 "$TMP_REMUX" 2>/dev/null | head -1)
+                if [ -n "$AUD2" ]; then
+                  mv -f "$TMP_REMUX" "$HEVC_FILE"
+                  echo "✅ Audio berhasil di-re-mux ke HEVC."
+                else
+                  rm -f "$TMP_REMUX"
+                  echo "⚠️ Original juga gak punya audio — HEVC tanpa suara (wajar kalau sumber silent)."
+                fi
+              else
+                rm -f "$TMP_REMUX"
+                echo "⚠️ Re-mux gagal — HEVC tanpa suara."
+              fi
+            else
+              echo "🔊 HEVC punya audio stream (#$AUD) — OK."
+            fi
             HEVC_THUMB="${HEVC_FILE%.mp4}.jpg"
             HSEEK=1; [ "$HDUR_INT" -gt 6 ] && HSEEK=$((HDUR_INT/2))
             "$FFMPEG_STATIC" -hide_banner -loglevel error -y -ss "$HSEEK" -i "$HEVC_FILE" -frames:v 1 -q:v 2 -vf "scale=640:-2" "$HEVC_THUMB" 2>/dev/null || true

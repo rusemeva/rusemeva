@@ -46,6 +46,29 @@ export default {
 
     try {
       if (request.method === 'POST') {
+        const url = new URL(request.url);
+
+        // === #2 Endpoint /progress: progress.py push % encode ke sini -> simpan KV ===
+        if (url.pathname === '/progress') {
+          try {
+            const body = await request.json();
+            const id = (body.id || '').toString();
+            const pct = parseInt(body.pct, 10);
+            const secret = (body.secret || '').toString();
+            // Kalau PROGRESS_SECRET diset, wajib cocok (anti-abuse)
+            if (env.PROGRESS_SECRET && secret !== env.PROGRESS_SECRET) {
+              return new Response('forbidden', { status: 403 });
+            }
+            if (id && !isNaN(pct)) {
+              // TTL 6 jam (1 encode job max) biar KV gak numpuk
+              await env.ORVELLA_KV.put(`orv:${id}:pct`, String(pct), { expirationTtl: 21600 });
+            }
+            return new Response('OK');
+          } catch (_) {
+            return new Response('bad request', { status: 400 });
+          }
+        }
+
         const update = await request.json();
 
         // Access control — tolak siapa pun selain owner
@@ -401,12 +424,9 @@ async function handleStatus(chatId, env) {
       msg += `  ⏱ ${formatDuration(elapsed)} · mulai ${created} WIB\n`;
       msg += `  🔗 ${run.html_url}\n`;
 
-      // Kalau encode lagi jalan -> ambil progress % dari log terakhir
+      // Kalau encode lagi jalan -> ambil progress % dari KV (di-push progress.py)
       if (wf.includes('encode')) {
         try {
-          const logResp = await ghApi(env, `actions/runs/${run.id}/logs`, 'GET');
-          // GitHub balikin zip; kita cuma butuh tail. Pakai API check + parse sederhana:
-          // fallback: cek artifact/log text lewat endpoint jobs.
           const jobsResp = await ghApi(env, `actions/runs/${run.id}/jobs?per_page=5`);
           const jobs = await jobsResp.json();
           const job = jobs.workflow_runs?.jobs?.[0] || jobs.jobs?.[0];
@@ -416,7 +436,21 @@ async function handleStatus(chatId, env) {
               const st = enc.status;
               const em = enc.conclusion || '';
               let pct = '';
-              if (st === 'in_progress') pct = ' ⏳ (berjalan)';
+              if (st === 'in_progress') {
+                pct = ' ⏳ (berjalan)';
+                // Baca % terakhir dari KV: orv:<id>:pct (di-push progress.py tiap 5%)
+                try {
+                  const orvId = run.display_title?.match(/ORV-[a-z0-9-]+/i)?.[0]
+                    || (await env.ORVELLA_KV.get(`run:${run.id}`));
+                  if (orvId) {
+                    const kvPct = await env.ORVELLA_KV.get(`orv:${orvId}:pct`);
+                    if (kvPct !== null && kvPct !== undefined && kvPct !== '') {
+                      const n = parseInt(kvPct, 10);
+                      if (!isNaN(n) && n >= 0) pct = ` 🔄 ${n}%`;
+                    }
+                  }
+                } catch (_) {}
+              }
               else if (st === 'completed' && em === 'success') pct = ' ✅';
               else if (st === 'completed' && em === 'failure') pct = ' ❌';
               msg += `  📊 Status: ${st}${pct}\n`;

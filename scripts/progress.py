@@ -34,6 +34,25 @@ def req(method, payload):
         return {}
 
 
+def push_pct_to_worker(pct):
+    """#2 Kirim % encode ke worker biar /status bisa nampilin progress dari KV."""
+    orv_id = os.environ.get("ORV_ID", "")
+    worker = os.environ.get("WORKER_URL", "").rstrip("/")
+    secret = os.environ.get("PROGRESS_SECRET", "")
+    if not orv_id or not worker:
+        return
+    try:
+        payload = json.dumps({"id": orv_id, "pct": pct, "secret": secret}).encode()
+        rq = urllib.request.Request(
+            "{}/progress".format(worker),
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(rq, timeout=10).read()
+    except Exception as e:
+        print("⚠️ push pct gagal: {}".format(e))
+
+
 def get_mid():
     try:
         return int(open(MSG_FILE).read().strip())
@@ -173,6 +192,7 @@ elif mode == "progress":
             ICON, PHASE_LABEL, build_bar(pct), pct, eta_line, FILENAME)
         edit(text)
         write_state(start_epoch, pct, now)
+        push_pct_to_worker(pct)
     else:
         print("progress skip {}% (last={})".format(pct, last_pct))
 
@@ -180,11 +200,13 @@ elif mode == "done":
     text = sys.argv[2].replace("\\n", "\n") if len(sys.argv) > 2 else \
         "✅ <b>{} selesai!</b>\n\n⬆️ Mengupload ke release...".format(PHASE_LABEL)
     edit(text)
+    push_pct_to_worker(100)
 
 elif mode == "fail":
     text = sys.argv[2].replace("\\n", "\n") if len(sys.argv) > 2 else \
         "❌ <b>{} gagal.</b>\n\n🔗 Cek log run.".format(PHASE_LABEL)
     edit(text)
+    push_pct_to_worker(-1)
 
 else:
     print("unknown mode: {}".format(mode))
