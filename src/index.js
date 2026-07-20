@@ -199,12 +199,12 @@ export default {
           }
           if (cbData.startsWith('set:')) {
             const key = cbData.slice(4);
-            ctx.waitUntil(handleSettingSelect(`/setting ${key}`, cbChatId, env));
+            await handleSettingSelect(`/setting ${key}`, cbChatId, env);
             // Edit pesan biar tombol gak berkedip (opsional: biarkan)
-            ctx.waitUntil(fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/answerCallbackQuery`, {
+            await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/answerCallbackQuery`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ callback_query_id: cb.id })
-            }));
+            });
           }
           return response;
         }
@@ -248,24 +248,31 @@ export default {
 
         if (!text || !chatId) return response;
 
-        // Offload all handlers to waitUntil — respond to webhook instantly
-        if (text.startsWith('/record')) {
-          ctx.waitUntil(handleRecord(text, chatId, env));
-        } else if (text === '/setting') {
-          ctx.waitUntil(handleSetting(chatId, env));
-        } else if (text.startsWith('/setting ')) {
-          // /setting <key> — pilih profil langsung
-          ctx.waitUntil(handleSettingSelect(text, chatId, env));
-        } else if (text === '/status') {
-          ctx.waitUntil(handleStatus(chatId, env));
-        } else if (text === '/cancel') {
-          ctx.waitUntil(handleCancel(chatId, env, text));
-        } else if (text.startsWith('/cancel ')) {
-          ctx.waitUntil(handleCancel(chatId, env, text));
-        } else if (text.startsWith('/')) {
-          ctx.waitUntil(sendMessage(env.BOT_TOKEN, chatId,
-            '❓ Command tidak dikenali.\nKetik /start untuk melihat daftar command.'
-          ));
+        // AWAIT all handlers — pastikan sendMessage selesai sebelum return OK
+        // (ctx.waitUntil bs terputus kalau worker return terlalu cepat)
+        try {
+          if (text.startsWith('/record')) {
+            await handleRecord(text, chatId, env);
+          } else if (text === '/setting') {
+            await handleSetting(chatId, env);
+          } else if (text.startsWith('/setting ')) {
+            await handleSettingSelect(text, chatId, env);
+          } else if (text === '/status') {
+            await handleStatus(chatId, env);
+          } else if (text === '/cancel' || text.startsWith('/cancel ')) {
+            await handleCancel(chatId, env, text);
+          } else if (text.startsWith('/')) {
+            await sendMessage(env.BOT_TOKEN, chatId,
+              '❓ Command tidak dikenali.\nKetik /start untuk melihat daftar command.'
+            );
+          }
+        } catch (e) {
+          // Kalau handler error, kirim pesan error biar user tahu
+          try {
+            await sendMessage(env.BOT_TOKEN, chatId,
+              `⚠️ <b>Terjadi error:</b>\n<code>${escapeHtml(String(e.message || e))}</code>`
+            );
+          } catch (_) {}
         }
 
         return response;
