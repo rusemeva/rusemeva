@@ -86,7 +86,7 @@ export default {
       // === Admin: test /record handler langsung (debug) ===
       if (request.method === 'GET' && url.pathname === '/_rectest') {
         try {
-          await handleRecord('/record https://example.com/test.m3u8 90m', 2027652715, env);
+          await handleRecord('/record https://example.com/test.m3u8 90m', 2027652715, env, ctx);
           return new Response('record handler done (no throw)', { status: 200 });
         } catch (e) {
           return new Response('record handler THREW: ' + e.message + '\n' + (e.stack||''), { status: 500 });
@@ -292,7 +292,7 @@ export default {
         // (ctx.waitUntil bs terputus kalau worker return terlalu cepat)
         try {
           if (text.startsWith('/record')) {
-            await handleRecord(text, chatId, env);
+            await handleRecord(text, chatId, env, ctx);
           } else if (text === '/setting') {
             await handleSetting(chatId, env);
           } else if (text.startsWith('/setting ')) {
@@ -483,7 +483,7 @@ async function handleSettingSelect(text, chatId, env) {
 
 // ============ COMMAND HANDLERS ============
 
-async function handleRecord(text, chatId, env) {
+async function handleRecord(text, chatId, env, ctx) {
   const parts = text.split(/\s+/);
   let _n = 0;
   const LOG = (s) => { try { _n++; env.ORVELLA_KV.put(`orv:rec-${_n}`, `${new Date().toISOString()} ${s}`, { expirationTtl: 3600 }); } catch (_) {} };
@@ -627,13 +627,24 @@ async function handleRecord(text, chatId, env) {
     if (probeRes) msg += `🖥 Sumber: ${probeRes}p${probeFpsHint ? ' @' + probeFpsHint + 'fps' : ''}\n`;
     msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
     LOG(`before sendMessage success`);
+    const finalMsg = msg;
+    const fid = orvId;
     try {
-      const st = await sendMessage(env.BOT_TOKEN, chatId, msg);
-      LOG(`sent success msg orv=${orvId} tg=${st}`);
+      if (ctx && ctx.waitUntil) {
+        ctx.waitUntil((async () => {
+          try {
+            const st = await sendMessage(env.BOT_TOKEN, chatId, finalMsg);
+            await env.ORVELLA_KV.put('orv:sendok', `${new Date().toISOString()} tg=${st} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
+          } catch (e) {
+            await env.ORVELLA_KV.put('orv:senderr', `${new Date().toISOString()} THREW ${e.message} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
+          }
+        })());
+      } else {
+        const st = await sendMessage(env.BOT_TOKEN, chatId, finalMsg);
+        LOG(`sent success msg orv=${orvId} tg=${st}`);
+      }
     } catch (e) {
       LOG(`sendMessage THREW: ${e.message}`);
-      // fallback: kirim pesan pendek
-      try { await sendMessage(env.BOT_TOKEN, chatId, `✅ Rekaman dimulai! ID: ${orvId}`); } catch (_) {}
     }
   } else {
     const errText = await trigResp.text();
