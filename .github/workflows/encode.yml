@@ -70,22 +70,20 @@ jobs:
           RAW="${{ steps.inputs.outputs.filename }}"
           echo "📥 Download original dari release temp: $TAG / $RAW"
           mkdir -p /tmp/orvella_dl
-          # Download SEMUA asset dari release temp (original utuh ATAU segment part-*.mp4)
+          # Download SEMUA asset dari release temp (original utuh ATAU segment part-*)
           gh release download "$TAG" --repo "${{ github.repository }}" --dir /tmp/orvella_dl 2>/dev/null \
             && echo "✅ Download semua asset release temp" \
             || echo "⚠️ gh release download gagal"
           echo "📂 Isi download:"
           ls -lh /tmp/orvella_dl
 
-          # Kalau terpecah jadi segment (part-*.mp4), gabungkan dulu
-          if ls /tmp/orvella_dl/part-*.mp4 >/dev/null 2>&1; then
-            echo "🧩 Segment terdeteksi, gabungkan..."
-            : > /tmp/orvella_dl/seglist.txt
-            for f in $(ls /tmp/orvella_dl/part-*.mp4 | sort); do
-              echo "file '$f'" >> /tmp/orvella_dl/seglist.txt
-            done
-            "$FFMPEG_STATIC" -hide_banner -loglevel error -y -f concat -safe 0 \
-              -i /tmp/orvella_dl/seglist.txt -c copy "/tmp/orvella_dl/$RAW" || true
+          # Kalau terpecah jadi segment (part-*), re-assemble jadi file utuh.
+          # Karena byte-split, cukup `cat` balik dalam urutan ter-sort ->
+          # hasil BIT-IDENTIK dgn original (tidak perlu ffmpeg concat).
+          if ls /tmp/orvella_dl/part-* >/dev/null 2>&1; then
+            echo "🧩 Segment terdeteksi, re-assemble via cat (urutan sort)..."
+            cat $(ls /tmp/orvella_dl/part-* | sort) > "/tmp/orvella_dl/$RAW"
+            echo "✅ Re-assembled: $(ls -lh "/tmp/orvella_dl/$RAW" | awk '{print $5}')"
           fi
 
           if [ -s "/tmp/orvella_dl/$RAW" ]; then
@@ -212,7 +210,7 @@ jobs:
           SRC_DUR_INT="${{ steps.inputs.outputs.duration }}"
           [ -z "$SRC_DUR_INT" ] || [ "$SRC_DUR_INT" -le 0 ] 2>/dev/null && SRC_DUR_INT=60
 
-          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id python3 scripts/progress.py start || true
+          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state python3 scripts/progress.py start || true
           LAST_PCT=-1
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \

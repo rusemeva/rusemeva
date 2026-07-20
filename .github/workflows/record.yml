@@ -184,13 +184,14 @@ jobs:
               BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
               PHASE_LABEL=Rekam \
               PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
+              PROGRESS_STATE_FILE=/tmp/orvella_rec_state \
               python3 scripts/progress.py start 2>/dev/null || true
             set +e
             # `timeout` = backstop keras: bunuh ffmpeg (SIGTERM, lalu SIGKILL +30s)
             # kalau -t / -timelimit gagal stop di live stream. File tetap valid
             # karena step sukses dicek dari ukuran file, bukan exit code.
             # -progress pipe:1 -> parse out_time_ms -> persen rekam real-time.
-            LAST_PCT=-1; NEXT_SEND=0
+            LAST_PCT=-1
             timeout -k 30 "$REC_WALL" ffmpeg "${FFMPEG_ARGS[@]}" 2>/dev/null | while IFS='=' read -r k v; do
               if [ "$k" = "out_time_ms" ]; then
                 ms=${v%.*}
@@ -198,16 +199,16 @@ jobs:
                 cur=$(( ms / 1000000 ))
                 pct=$(( (cur * 100) / SRC_DUR_INT ))
                 [ "$pct" -gt 100 ] && pct=100
-                now=$(date +%s)
-                if [ "$pct" -ge "$((LAST_PCT + 10))" ] && [ "$now" -ge "$NEXT_SEND" ]; then
-                  LAST_PCT=$(( (pct / 10) * 10 ))
-                  NEXT_SEND=$(( now + 5 ))
-                  echo "🔴 Rekam ${LAST_PCT}%"
+                # Forward tiap perubahan %, progress.py yg akan throttle (5% / 5s)
+                if [ "$pct" != "$LAST_PCT" ]; then
+                  LAST_PCT=$pct
+                  echo "🔴 Rekam ${pct}%"
                   CHAT_ID="${{ steps.inputs.outputs.chat_id }}" FILENAME="$FILE" \
                     TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
                     BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
                     PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
-                    python3 scripts/progress.py progress "$LAST_PCT" 2>/dev/null || true
+                    PROGRESS_STATE_FILE=/tmp/orvella_rec_state \
+                    python3 scripts/progress.py progress "$pct" 2>/dev/null || true
                 fi
               fi
             done
@@ -376,19 +377,16 @@ jobs:
             echo "🧩 ORIGINAL $(numfmt --to=iec $ORIG_BYTES) > 2GB — pecah jadi segment <1.9GB"
             SEG_DIR="segments"
             rm -rf "$SEG_DIR"; mkdir -p "$SEG_DIR"
-            # -f segment: potong by size (~1.9GB), -c copy (tanpa re-encode)
-            ffmpeg -hide_banner -y -i "$FILE" \
-              -c copy -map 0 \
-              -f segment -segment_format mp4 \
-              -reset_timestamps 1 \
-              -fs 2000000000 \
-              "$SEG_DIR/part-%03d.mp4" 2>/dev/null || true
+            # Byte-split (bukan ffmpeg -f segment) -> part-000, part-001, ...
+            # Tiap part <2GB (1990MB) supaya muat limit asset GitHub Release.
+            # Re-assembly cukup `cat` balik (byte-kontigu) -> identik dgn original.
+            split -b 1990M --numeric-suffixes=0 --suffix-length=3 "$FILE" "$SEG_DIR/part-"
             # verify ada segment
-            if ls "$SEG_DIR"/part-*.mp4 >/dev/null 2>&1; then
+            if ls "$SEG_DIR"/part-* >/dev/null 2>&1; then
               echo "SEGMENTED=1" >> $GITHUB_ENV
               echo "SEG_DIR=$SEG_DIR" >> $GITHUB_ENV
-              echo "✅ Segment siap:"
-              ls -lh "$SEG_DIR"/part-*.mp4
+              echo "✅ Segment siap ($(ls "$SEG_DIR"/part-* | wc -l) part):"
+              ls -lh "$SEG_DIR"/part-* | head
             else
               echo "⚠️ Segment gagal, fallback kirim file utuh (maybe >2GB dilewati)"
               echo "SEGMENTED=0" >> $GITHUB_ENV
@@ -423,9 +421,9 @@ jobs:
             --title "Orvella Encode Temp ${{ github.run_id }}" --notes "$TEMP_NOTES"
           echo "📦 Temp release: $TAG"
           # Upload source: kalau ter-segment, upload part-*.mp4; else upload file utuh
-          if [ "${SEGMENTED:-0}" = "1" ] && ls segments/part-*.mp4 >/dev/null 2>&1; then
-            echo "🧩 Upload segment part-*.mp4 ke temp..."
-            for f in segments/part-*.mp4; do
+          if [ "${SEGMENTED:-0}" = "1" ] && ls segments/part-* >/dev/null 2>&1; then
+            echo "🧩 Upload segment part-* ke temp..."
+            for f in segments/part-*; do
               gh release upload "$TAG" --repo "${{ github.repository }}" "$f" --clobber 2>/dev/null \
                 && echo "  ✅ $f" || echo "  ⚠️ gagal $f"
             done
