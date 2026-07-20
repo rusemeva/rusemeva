@@ -223,15 +223,45 @@ jobs:
             fi
             echo "ℹ️  ffmpeg exit=${FFMPEG_EXIT}, file size=${ACTUAL_SIZE} bytes"
 
-            # File valid (>= MIN_SIZE) → sukses, walau exit code != 0
-            # (untuk live stream, exit non-zero sering berarti stream berakhir lebih awal,
-            #  tapi file yang sudah terekam tetap valid dan layak disimpan)
+            # File valid (>= MIN_SIZE) → cek KELENGKAPAN durasi juga.
+            # #4: stream live bisa putus di tengah -> file ada & >100KB tapi
+            # durasi cuma sebagian. Retry kalau durasi < 80% target (kecuali attempt terakhir).
             if [ "$ACTUAL_SIZE" -ge "$MIN_SIZE" ]; then
-              SUCCESS=1
-              if [ "$FFMPEG_EXIT" -ne 0 ]; then
-                echo "⚠️  ffmpeg exit non-zero, tapi file valid (stream kemungkinan berakhir lebih awal). Diterima."
+              # Ukur durasi hasil rekam
+              REC_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$FILE" 2>/dev/null | head -1)
+              REC_DUR_INT=${REC_DUR%.*}; [ -z "$REC_DUR_INT" ] && REC_DUR_INT=0
+              THRESH=$(( SRC_DUR_INT * 80 / 100 ))
+              echo "📏 Durasi hasil: ${REC_DUR_INT}s / target ${SRC_DUR_INT}s (ambang ${THRESH}s)"
+
+              if [ "$REC_DUR_INT" -lt "$THRESH" ] && [ "$ATTEMPT" -lt "$MAX_RETRIES" ]; then
+                echo "⚠️  Rekaman kependekan (stream putus?) — retry biar dapat lebih lengkap."
+                echo "❌ Attempt ${ATTEMPT}: durasi ${REC_DUR_INT}s < ${THRESH}s."
+                # Simpan kandidat terbaik: kalau retry berikut malah lebih pendek, pakai ini
+                if [ "$REC_DUR_INT" -gt "${BEST_DUR:-0}" ]; then
+                  cp -f "$FILE" "${FILE}.best" 2>/dev/null && BEST_DUR=$REC_DUR_INT
+                  echo "💾 Simpan kandidat terbaik: ${BEST_DUR}s"
+                fi
+                echo "⏳ Retry dalam 15 detik..."
+                sleep 15
+                ATTEMPT=$((ATTEMPT + 1))
+                continue
+              fi
+
+              # Attempt terakhir atau durasi cukup: kalau ada kandidat lebih panjang, pakai itu
+              if [ -f "${FILE}.best" ] && [ "${BEST_DUR:-0}" -gt "$REC_DUR_INT" ]; then
+                echo "↩️  Pakai kandidat terbaik (${BEST_DUR}s > ${REC_DUR_INT}s)."
+                mv -f "${FILE}.best" "$FILE"
               else
-                echo "✅ Recording attempt ${ATTEMPT} sukses."
+                rm -f "${FILE}.best" 2>/dev/null || true
+              fi
+
+              SUCCESS=1
+              if [ "$REC_DUR_INT" -lt "$THRESH" ]; then
+                echo "⚠️  Durasi tetap di bawah target setelah ${ATTEMPT} attempt — simpan yang ada (stream mungkin memang berakhir lebih awal)."
+              elif [ "$FFMPEG_EXIT" -ne 0 ]; then
+                echo "⚠️  ffmpeg exit non-zero, tapi file valid & durasi cukup. Diterima."
+              else
+                echo "✅ Recording attempt ${ATTEMPT} sukses (durasi lengkap)."
               fi
               # Pastikan 100% lalu ubah jadi pesan final
               echo "🔴 Rekam 100%"

@@ -69,6 +69,46 @@ export default {
           }
         }
 
+        // === #7 Endpoint /rtcal: kalibrasi RT otomatis ===
+        // GET  /rtcal?preset=veryfast  -> balik persen kalibrasi (rt_aktual/rt_teori*100) atau "" kalau kosong
+        // POST /rtcal  body {preset, rt, secret} -> simpan & rata-rata ke KV orv:rtcal:<preset>
+        if (url.pathname === '/rtcal') {
+          try {
+            if (request.method === 'GET') {
+              const preset = url.searchParams.get('preset') || '';
+              const raw = await env.ORVELLA_KV.get(`orv:rtcal:${preset}`);
+              return new Response(raw || '', { status: 200 });
+            }
+            if (request.method === 'POST') {
+              const body = await request.json();
+              const preset = (body.preset || '').toString();
+              const rt = parseFloat(body.rt);
+              const secret = (body.secret || '').toString();
+              if (env.PROGRESS_SECRET && secret !== env.PROGRESS_SECRET) {
+                return new Response('forbidden', { status: 403 });
+              }
+              if (preset && !isNaN(rt) && rt > 0) {
+                // rt_teori dari ladder statis (sama kayak encode.yml)
+                const RT_TEORI = { ultrafast:20, superfast:12, veryfast:6, faster:4, fast:3, medium:1.0, slow:0.7, slower:0.45, veryslow:0.25, placebo:0.1, speed:6, balanced:1.0, quality:0.7, max:0.25 };
+                const teori = RT_TEORI[preset] || 1.0;
+                const pct = rt / teori * 100; // >100 = lebih lambat dari teori
+                // Rata-rata dengan histori (simpan nilai pct)
+                const prev = parseFloat(await env.ORVELLA_KV.get(`orv:rtcal:${preset}`) || '');
+                let avg = pct;
+                if (!isNaN(prev) && prev > 0) {
+                  avg = (prev + pct) / 2;
+                }
+                await env.ORVELLA_KV.put(`orv:rtcal:${preset}`, avg.toFixed(2), { expirationTtl: 60*86400 });
+                return new Response(`ok avg=${avg.toFixed(2)}`, { status: 200 });
+              }
+              return new Response('bad', { status: 400 });
+            }
+            return new Response('method', { status: 405 });
+          } catch (_) {
+            return new Response('err', { status: 500 });
+          }
+        }
+
         const update = await request.json();
 
         // Access control — tolak siapa pun selain owner
