@@ -75,6 +75,16 @@ export default {
         }
       }
 
+      // === Admin: test /record handler langsung (debug) ===
+      if (request.method === 'GET' && url.pathname === '/_rectest') {
+        try {
+          await handleRecord('/record https://example.com/test.m3u8 90m', 2027652715, env);
+          return new Response('record handler done (no throw)', { status: 200 });
+        } catch (e) {
+          return new Response('record handler THREW: ' + e.message + '\n' + (e.stack||''), { status: 500 });
+        }
+      }
+
       // === #7 Endpoint /rtcal GET: baca kalibrasi RT (realtime_x aktual, rata-rata histori) ===
       // encode.yml panggil GET ini buat dapat BASE_RT yg akurat.
       if (request.method === 'GET' && url.pathname === '/rtcal') {
