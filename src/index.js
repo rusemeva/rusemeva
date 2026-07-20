@@ -609,9 +609,9 @@ async function handleRecord(text, chatId, env) {
   }
 
   // Trigger GitHub Actions
+  LOG(`before triggerGitHubActions`);
   const trig = await triggerGitHubActions(env, url, duration, chatId, filename, referer, profile);
-  const orvId = trig.orvId;
-  LOG(`triggered orv=${orvId}`);
+  LOG(`after triggerGitHubActions`);
   const trigResp = await trig.resp; // fetch returns Promise -> await dulu
   LOG(`trigResp status=${trigResp.status}`);
   // Drain body biar subrequest pool gak ke-lock (penyebab sendMessage hang)
@@ -865,13 +865,16 @@ function genOrvId() {
 
 async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, referer = '', profile = null) {
   const orvId = genOrvId();
-  // Simpan mapping ID -> chat (biar /status /cancel gampang)
+  // Simpan mapping ID -> chat (biar /status /cancel gampang) — timeout biar gak hang
   try {
-    await env.ORVELLA_KV.put(`orv:${orvId}`, JSON.stringify({
-      chat_id: String(chatId),
-      type: 'record',
-      created_at: new Date().toISOString(),
-    }), { expirationTtl: 60 * 60 * 24 * 7 }); // 7 hari
+    await Promise.race([
+      env.ORVELLA_KV.put(`orv:${orvId}`, JSON.stringify({
+        chat_id: String(chatId),
+        type: 'record',
+        created_at: new Date().toISOString(),
+      }), { expirationTtl: 60 * 60 * 24 * 7 }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('kv put timeout')), 3000))
+    ]);
   } catch (_) { /* KV optional */ }
 
   const payload = {
