@@ -965,7 +965,8 @@ function ghApi(env, path, method = 'GET') {
         'Authorization': `token ${env.GH_TOKEN}`,
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'orvella-vault'
-      }
+      },
+      signal: AbortSignal.timeout(10000)
     }
   );
 }
