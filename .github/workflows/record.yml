@@ -55,6 +55,7 @@ jobs:
             echo "referer=${{ github.event.client_payload.referer }}" >> $GITHUB_OUTPUT
             echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
             echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
+            echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
           else
             echo "m3u8_url=${{ inputs.m3u8_url }}" >> $GITHUB_OUTPUT
             echo "duration=${{ inputs.duration }}" >> $GITHUB_OUTPUT
@@ -408,6 +409,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           HEVC_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
           HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
         run: |
           set +e
           FILE="${{ steps.fname.outputs.filename }}"
@@ -442,7 +444,8 @@ jobs:
             -f "client_payload[duration]=${DURATION}" \
             -f "client_payload[release_tag]=${TAG}" \
             -f "client_payload[hevc_preset]=${HEVC_PRESET}" \
-            -f "client_payload[hevc_crf]=${HEVC_CRF}" ; then
+            -f "client_payload[hevc_crf]=${HEVC_CRF}" \
+            -f "client_payload[orv_id]=${ORV_ID}" ; then
             echo "✅ orvella-encode di-trigger"
           else
             echo "⚠️ Gagal trigger orvella-encode"
@@ -573,6 +576,7 @@ jobs:
           THUMB_FILE: ${{ env.THUMB_FILE }}
           HAS_THUMB: ${{ env.HAS_THUMB }}
           TG_API_URL: ${{ secrets.TG_API_URL || 'http://localhost:8081' }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
           PHASE: original
           HEVC_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
           HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}

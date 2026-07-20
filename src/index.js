@@ -98,7 +98,9 @@ export default {
         } else if (text === '/status') {
           ctx.waitUntil(handleStatus(chatId, env));
         } else if (text === '/cancel') {
-          ctx.waitUntil(handleCancel(chatId, env));
+          ctx.waitUntil(handleCancel(chatId, env, text));
+        } else if (text.startsWith('/cancel ')) {
+          ctx.waitUntil(handleCancel(chatId, env, text));
         } else if (text.startsWith('/')) {
           ctx.waitUntil(sendMessage(env.BOT_TOKEN, chatId,
             '❓ Command tidak dikenali.\nKetik /start untuk melihat daftar command.'
@@ -280,6 +282,24 @@ async function handleRecord(text, chatId, env) {
     duration = parsed;
   }
 
+  // === #6 GUARD GANDA: blokir kalau ada run in_progress (rekam/encode) ===
+  // Cek KV lock dulu (cepat), lalu GH API sbg otoritat.
+  try {
+    const running = await checkActiveRuns(env);
+    if (running.length > 0) {
+      let msg = '⛔ <b>Masih ada proses berjalan.</b>\n\n';
+      msg += `Tunggu sampai selesai / dibatalkan dulu:\n`;
+      for (const r of running.slice(0, 5)) {
+        const wf = r.name || '';
+        const phase = wf.includes('encode') ? '🔄 Encode HEVC' : (wf.includes('record') ? '🎬 Rekam' : wf);
+        msg += `• ${phase}\n  🔗 ${r.html_url}\n`;
+      }
+      msg += '\nGunakan /cancel untuk membatalkan, atau /status untuk detail.';
+      await sendMessage(env.BOT_TOKEN, chatId, msg);
+      return new Response('OK');
+    }
+  } catch (_) { /* kalau GH API error, biarkan lanjut (fail-open) */ }
+
   // Validate URL
   if (!url.startsWith('http')) {
     await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
@@ -313,20 +333,34 @@ async function handleRecord(text, chatId, env) {
   const ts = `${wib.getFullYear()}-${pad(wib.getMonth()+1)}-${pad(wib.getDate())}T${pad(wib.getHours())}-${pad(wib.getMinutes())}-${pad(wib.getSeconds())}`;
   const filename = `recording-${ts}-${formatDurationShort(duration)}.mp4`;
 
-  // Trigger GitHub Actions
-  const ghResp = await triggerGitHubActions(env, url, duration, chatId, filename, referer, profile);
+  // === #4 ESTIMASI SEBELUM REKAM: hitung & tampilkan di notif mulai ===
+  const recSec = duration;
+  const encSec = estEncodeSeconds(profileKey, recSec);
+  const totalSec = recSec + encSec;
+  const LIMIT = 6 * 3600;
+  let estLine = `⏱ Estimasi: rekam ${formatDuration(recSec)} + encode ~${formatDuration(encSec)} (total ~${formatDuration(totalSec)})`;
+  if (totalSec > LIMIT) {
+    estLine += `\n⛔ Total LEWAT 6 jam — HEVC bisa ke-skip (auto-downgrade di encode.yml otomatis turun preset).`;
+  } else if (totalSec > LIMIT * 0.85) {
+    estLine += `\n⚠️ Mendekati limit 6 jam — HEVC bisa ke-potong (original tetap dikirim).`;
+  }
 
-  if (ghResp.ok) {
+  // Trigger GitHub Actions
+  const trig = await triggerGitHubActions(env, url, duration, chatId, filename, referer, profile);
+  const orvId = trig.orvId;
+
+  if (trig.resp.ok) {
     let msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
+      `🆔 ID: <code>${orvId}</code>\n` +
       `🔗 URL: <code>${escapeHtml(url)}</code>\n` +
       `⏱ Durasi: ${formatDuration(duration)}\n` +
       `📦 File: ${filename}\n` +
       `⚙️ Encode: <b>${profile.label}</b> (${profile.preset}, crf ${profile.crf})\n`;
     if (referer) msg += `🔗 Referer: <code>${escapeHtml(referer)}</code>\n`;
-    msg += '☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nKetik /status untuk cek progress.';
+    msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
     await sendMessage(env.BOT_TOKEN, chatId, msg);
   } else {
-    const errText = await ghResp.text();
+    const errText = await trig.resp.text();
     await sendMessage(env.BOT_TOKEN, chatId,
       `❌ Gagal trigger rekaman.\nError: ${escapeHtml(errText.slice(0, 500))}`
     );
@@ -401,9 +435,14 @@ async function handleStatus(chatId, env) {
   return new Response('OK');
 }
 
-async function handleCancel(chatId, env) {
+async function handleCancel(chatId, env, text) {
+  // Cari ID opsional: /cancel ORV-XXXX atau /cancel <run_url>
+  let targetId = '';
+  const parts = (text || '').trim().split(/\s+/);
+  if (parts[1]) targetId = parts[1];
+
   try {
-    const resp = await ghApi(env, 'actions/runs?per_page=5');
+    const resp = await ghApi(env, 'actions/runs?per_page=20');
     const data = await resp.json();
     const inProgress = (data.workflow_runs || []).filter(r => r.status === 'in_progress');
 
@@ -412,11 +451,61 @@ async function handleCancel(chatId, env) {
       return new Response('OK');
     }
 
+    // === #2 /cancel <id>: filter by ID biar lebih presisi ===
+    if (targetId) {
+      // Coba resolve dari KV dulu (ID = orv:ID)
+      let matched = [];
+      try {
+        const meta = await env.ORVELLA_KV.get(`orv:${targetId}`);
+        if (meta) {
+          const m = JSON.parse(meta);
+          // KV simpan chat_id; cocokkan dgn chat pengirim
+          if (m.chat_id && String(m.chat_id) !== String(chatId)) {
+            await sendMessage(env.BOT_TOKEN, chatId,
+              `⛔ ID <code>${targetId}</code> bukan milikmu.`);
+            return new Response('OK');
+          }
+        }
+      } catch (_) {}
+
+      // Match by run id di URL, atau by orv_id di client_payload (rekam)
+      // Cara praktis: bandingkan dgn tail URL run atau substring.
+      const t = targetId.replace(/^.*\/runs\//, '').replace(/[^A-Za-z0-9-]/g, '');
+      matched = inProgress.filter(r =>
+        String(r.id) === t ||
+        (r.html_url && r.html_url.includes(t)) ||
+        (r.name && r.name.includes(t))
+      );
+      // Kalau gak ketemu by run-id, anggap targetId = orv_id; perlu resolve lewat jobs.
+      if (!matched.length) {
+        for (const run of inProgress) {
+          try {
+            const jr = await ghApi(env, `actions/runs/${run.id}`);
+            const jd = await jr.json();
+            const cp = jd?.client_payload || {};
+            if (cp.orv_id === targetId) { matched.push(run); break; }
+          } catch (_) {}
+        }
+      }
+      if (!matched.length) {
+        await sendMessage(env.BOT_TOKEN, chatId,
+          `⚠️ Tidak ada proses aktif dengan ID <code>${targetId}</code>.\nGunakan /status untuk lihat daftar ID/run.`);
+        return new Response('OK');
+      }
+      for (const run of matched) {
+        await ghApi(env, `actions/runs/${run.id}/cancel`, 'POST');
+      }
+      await sendMessage(env.BOT_TOKEN, chatId,
+        `🚫 <b>1 rekaman dibatalkan.</b>\n🔗 ${matched[0].html_url}`);
+      return new Response('OK');
+    }
+
+    // Fallback: cancel SEMUA in_progress (perilaku lama)
     for (const run of inProgress) {
       await ghApi(env, `actions/runs/${run.id}/cancel`, 'POST');
     }
-
-    await sendMessage(env.BOT_TOKEN, chatId, `🚫 <b>${inProgress.length} rekaman dibatalkan.</b>`);
+    await sendMessage(env.BOT_TOKEN, chatId,
+      `🚫 <b>${inProgress.length} rekaman dibatalkan.</b>`);
   } catch (err) {
     await sendMessage(env.BOT_TOKEN, chatId, `❌ Error: ${escapeHtml(err.message)}`);
   }
@@ -461,7 +550,26 @@ function parseDuration(str) {
 
 // ============ HELPERS ============
 
+// ============ ORV ID GENERATOR ============
+// ID unik per aksi: ORV-<base36 timestamp>-<rand>
+// Dipakai di /record, /cancel, notif biar user gampang rujuk.
+function genOrvId() {
+  const ts = Date.now().toString(36).toUpperCase();
+  const rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `ORV-${ts}-${rnd}`;
+}
+
 async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, referer = '', profile = null) {
+  const orvId = genOrvId();
+  // Simpan mapping ID -> chat (biar /status /cancel gampang)
+  try {
+    await env.ORVELLA_KV.put(`orv:${orvId}`, JSON.stringify({
+      chat_id: String(chatId),
+      type: 'record',
+      created_at: new Date().toISOString(),
+    }), { expirationTtl: 60 * 60 * 24 * 7 }); // 7 hari
+  } catch (_) { /* KV optional */ }
+
   const payload = {
     m3u8_url: m3u8Url,
     duration: duration,
@@ -469,6 +577,7 @@ async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, re
     human_duration: formatDuration(duration),
     duration_label: formatDurationShort(duration),
     filename: filename,
+    orv_id: orvId,
   };
   if (referer) payload.referer = referer;
   // Sisipkan profil encode (fallback ke default kalau null)
@@ -477,21 +586,35 @@ async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, re
   payload.hevc_crf = p.crf;
   payload.encode_profile = p.key;
 
-  return fetch(
-    `https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/dispatches`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `token ${env.GH_TOKEN}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'orvella-vault'
-      },
-      body: JSON.stringify({
-          event_type: 'record-request',
-          client_payload: payload
-        })
-    }
-  );
+  return {
+    resp: fetch(
+      `https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/dispatches`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `token ${env.GH_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'orvella-vault'
+        },
+        body: JSON.stringify({
+            event_type: 'record-request',
+            client_payload: payload
+          })
+      }
+    ),
+    orvId,
+  };
+}
+
+async function checkActiveRuns(env) {
+  try {
+    const resp = await ghApi(env, 'actions/runs?per_page=10');
+    const data = await resp.json();
+    return (data.workflow_runs || []).filter(r =>
+      r.status === 'in_progress' || r.status === 'queued' || r.status === 'pending');
+  } catch (_) {
+    return [];
+  }
 }
 
 function ghApi(env, path, method = 'GET') {

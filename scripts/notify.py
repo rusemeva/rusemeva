@@ -11,6 +11,12 @@ run_id = os.environ.get("GITHUB_RUN_ID", "")
 job_status = os.environ.get("JOB_STATUS", "")
 phase = os.environ.get("PHASE", "both")
 
+# ORV ID (dari worker) — biar user gampang rujuk /cancel
+orv_id = os.environ.get("ORV_ID", "") or ""
+
+def id_line():
+    return f"🆔 ID: <code>{orv_id}</code>\n" if orv_id else ""
+
 # Metadata original (dari step ffprobe; default "?" kalau kosong)
 real_duration = os.environ.get("REAL_DURATION", "") or "?"
 resolution = os.environ.get("RESOLUTION", "") or "?"
@@ -238,6 +244,7 @@ if job_status == "success":
     if phase in ("original", "both"):
         caption_orig = (
             f"✅ <b>Rekaman selesai!</b>\n\n"
+            f"{id_line()}"
             f"📦 File: <code>{filename}</code>\n"
             f"📏 Size: {file_size}\n"
             f"⏱ Durasi: {real_duration}\n"
@@ -284,6 +291,7 @@ if job_status == "success":
             hevc_thumb_path = hevc_thumb_file if (has_hevc_thumb and os.path.isfile(hevc_thumb_file)) else ""
             caption_hevc = (
                 f"🎞 <b>HEVC 10-bit</b>\n\n"
+                f"{id_line()}"
                 f"📦 File: <code>{hevc_file}</code>\n"
                 f"📏 Size: {hevc_size}\n"
                 f"⏱ Durasi: {hevc_dur}\n"
@@ -292,15 +300,39 @@ if job_status == "success":
                 f"📶 Bitrate: {hevc_br}"
             )
             send_video_with_fallback(hevc_file, caption_hevc, hevc_thumb_path)
+        elif os.environ.get("HEVC_SPLIT", "0") == "1" and hevc_file:
+            # #1 SPLIT: kirim tiap part (file asli sudah di-split, hapus di workflow)
+            base = hevc_file
+            parts = sorted([f for f in os.listdir(os.path.dirname(base) or ".") if f.startswith(os.path.basename(base) + ".part")])
+            total = len(parts)
+            print(f"📦 Mengirim {total} part HEVC (split)...", flush=True)
+            for i, pf in enumerate(parts, 1):
+                ppath = os.path.join(os.path.dirname(base) or ".", pf)
+                psize = os.path.getsize(ppath)
+                pcap = (
+                    f"🎞 <b>HEVC 10-bit — Part {i}/{total}</b>\n\n"
+                    f"{id_line()}"
+                    f"📦 File: <code>{pf}</code>\n"
+                    f"📏 Size: {psize/1024/1024/1024:.2f} GB\n"
+                    f"⏱ Durasi: {hevc_dur}\n"
+                    f"🖥 Resolusi: {hevc_res}\n"
+                    f"ℹ️ Gabungkan semua part dengan: cat {os.path.basename(base)}.part* > {os.path.basename(base)}"
+                )
+                send_video_with_fallback(ppath, pcap, "")
+            # Bersihkan part
+            for pf in parts:
+                try: os.remove(os.path.join(os.path.dirname(base) or ".", pf))
+                except Exception: pass
         else:
             # Encode gagal / file tidak ada -> jujur lapor, jangan diam
             print("⚠️ HEVC file tidak ada -> encode gagal, lapor ke user.", flush=True)
             send_message(
                 f"❌ <b>Encode HEVC gagal.</b>\n\n"
+                f"{id_line()}"
                 f"📦 Source: <code>{filename}</code>\n"
-                f"ℹ️ Hasil HEVC tidak dikirim. Cek log encode: {run_url}"
+                f"ℹ️ Hasil HEVC tidak dikirim. Cek log encode: {run_url}\n"
+                f"🔄 Sistem otomatis mencoba ulang 1 level lebih cepat (lihat notifikasi berikutnya)."
             )
-
 elif job_status == "cancelled":
     # Pesan jujur tergantung phase:
     # - phase=hevc (encode) -> yang dibatalkan ENCODE-nya, rekaman SUDAH SELESAI (masih utuh di release).
@@ -308,6 +340,7 @@ elif job_status == "cancelled":
     if phase == "hevc":
         msg = (
             f"⏹ <b>Encode dibatalkan.</b>\n\n"
+            f"{id_line()}"
             f"📦 Source: <code>{filename}</code>\n"
             f"ℹ️ Rekaman ASLI tetap utuh di GitHub release (tidak terhapus).\n"
         )
@@ -317,6 +350,7 @@ elif job_status == "cancelled":
     else:
         msg = (
             f"🚫 <b>Rekaman dibatalkan.</b>\n\n"
+            f"{id_line()}"
             f"📦 File: <code>{filename}</code>\n"
             f"🔗 Run: {run_url}"
         )
@@ -354,6 +388,7 @@ else:
     log_block = f"\n\n📜 <b>Log tail:</b>\n<pre>{run_log.strip()[-1200:]}</pre>" if run_log.strip() else ""
     send_message(
         f"❌ <b>Rekaman gagal.</b>\n\n"
+        f"{id_line()}"
         f"📦 File: <code>{filename}</code>\n"
         f"🔗 Cek log: {run_url}{log_block}"
     )

@@ -35,6 +35,7 @@ jobs:
           echo "release_tag=${{ github.event.client_payload.release_tag }}" >> $GITHUB_OUTPUT
           echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
           echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
+          echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
 
       - name: Install dependencies (static ffmpeg untuk HEVC)
         run: |
@@ -284,6 +285,29 @@ jobs:
             echo "⚠️ Encode HEVC gagal."
           fi
 
+      # === #1 SPLIT UPLOAD >2GB: pecah HEVC jadi part <2GB (limit Bot API) ===
+      # Pakai split -b (bukan ffmpeg) biar gak re-encode. Kirim tiap part via notify.
+      - name: Split HEVC kalau >2GB (biar bisa dikirim Telegram)
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -n "$HEVC_FILE" ] && [ -s "$HEVC_FILE" ]; then
+            SIZE=$(stat -c%s "$HEVC_FILE" 2>/dev/null || echo 0)
+            MAX=$((2*1024*1024*1024))
+            if [ "$SIZE" -gt "$MAX" ]; then
+              echo "📦 HEVC $((SIZE/1024/1024/1024)) GB > 2GB -> split -b 1990M"
+              split -b 1990M -d "$HEVC_FILE" "${HEVC_FILE}.part"
+              # Hapus file asli biar notify gak kirim utuh
+              rm -f "$HEVC_FILE"
+              echo "HEVC_SPLIT=1" >> $GITHUB_ENV
+              ls -lh "${HEVC_FILE}.part"* 2>/dev/null || true
+            else
+              echo "HEVC_SPLIT=0" >> $GITHUB_ENV
+            fi
+          else
+            echo "HEVC_SPLIT=0" >> $GITHUB_ENV
+          fi
+
       - name: Notify Telegram — HEVC 10-bit (encode selesai)
         if: always()
         continue-on-error: true
@@ -302,6 +326,8 @@ jobs:
           HEVC_THUMB_FILE: ${{ env.HEVC_THUMB_FILE }}
           HAS_HEVC_THUMB: ${{ env.HAS_HEVC_THUMB }}
           TG_API_URL: ${{ secrets.TG_API_URL || 'http://localhost:8081' }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
+          HEVC_SPLIT: ${{ env.HEVC_SPLIT || '0' }}
           PHASE: hevc
         run: python3 scripts/notify.py
 
@@ -327,6 +353,43 @@ jobs:
           echo "🧹 Encode gagal -> hapus release temp biar gak numpuk: $TAG"
           gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
           # (kalau cancelled: sengaja TIDAK dihapus, biar user bisa retry manual)
+
+      # === #3 AUTO-RETRY: kalau encode gagal, redispatch 1 level lebih cepat ===
+      # Level: medium > faster > fast > veryfast(tetap) ; stop setelah veryfast.
+      # Release temp SUDAH dihapus di atas biar gak numpuk; dispatch baru bikin release baru.
+      - name: Auto-retry encode 1 level lebih cepat (kalau gagal)
+        if: failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
+          CHAT_ID: ${{ steps.inputs.outputs.chat_id || '' }}
+          FILENAME: ${{ steps.inputs.outputs.filename || '' }}
+          SRC_URL: ${{ steps.inputs.outputs.m3u8_url || '' }}
+          REFERRER: ${{ steps.inputs.outputs.referer || '' }}
+          CUR_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
+          CUR_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
+        run: |
+          # Tentukan preset turun 1 level
+          case "$CUR_PRESET" in
+            medium)   NEXT_PRESET=faster;  NEXT_CRF=22 ;;
+            faster)   NEXT_PRESET=fast;    NEXT_CRF=23 ;;
+            fast)     NEXT_PRESET=veryfast; NEXT_CRF=24 ;;
+            *)        echo "ℹ️ Sudah veryfast, tidak auto-retry lagi (stop di veryfast)."; exit 0 ;;
+          esac
+          echo "🔁 Auto-retry: $CUR_PRESET -> $NEXT_PRESET (crf $NEXT_CRF)"
+          # Update KV meta (buat /status)
+          gh api repos/${{ github.repository }}/dispatches \
+            -f event_type=encode-request \
+            -f "client_payload[filename]=$FILENAME" \
+            -f "client_payload[chat_id]=$CHAT_ID" \
+            -f "client_payload[m3u8_url]=$SRC_URL" \
+            -f "client_payload[referer]=$REFERRER" \
+            -f "client_payload[hevc_preset]=$NEXT_PRESET" \
+            -f "client_payload[hevc_crf]=$NEXT_CRF" \
+            -f "client_payload[orv_id]=$ORV_ID-retry" \
+            -f "client_payload[auto_retry]=1" || true
+          echo "✅ Auto-retry dispatched ($NEXT_PRESET)."
 
       - name: Bersihkan disk runner
         if: always()
