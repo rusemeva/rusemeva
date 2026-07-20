@@ -571,6 +571,7 @@ async function handleRecord(text, chatId, env) {
 
   // Ambil profil encode aktif
   const profileKey = await getProfile(env, chatId);
+  LOG(`got profile=${profileKey}`);
   const profile = ENCODE_PROFILES[profileKey];
 
   // Validate URL
@@ -578,16 +579,14 @@ async function handleRecord(text, chatId, env) {
     await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
     return new Response('OK');
   }
+  LOG(`url validated`);
 
   // Validate URL (cepat, gak network — jangan block handler)
   if (!url.startsWith('http')) {
     await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
     return new Response('OK');
   }
-
-  // Ambil profil encode aktif
-  const profileKey = await getProfile(env, chatId);
-  const profile = ENCODE_PROFILES[profileKey];
+  LOG(`url validated`);
 
   // Generate filename (WIB timezone)
   const now = new Date();
