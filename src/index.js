@@ -634,14 +634,14 @@ async function handleRecord(text, chatId, env, ctx) {
       if (ctx && ctx.waitUntil) {
         ctx.waitUntil((async () => {
           try {
-            const st = await sendMessage(env.BOT_TOKEN, chatId, finalMsg);
+            const st = await sendMessage(env.BOT_TOKEN, chatId, finalMsg, null, env);
             await env.ORVELLA_KV.put('orv:sendok', `${new Date().toISOString()} tg=${st} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
           } catch (e) {
             await env.ORVELLA_KV.put('orv:senderr', `${new Date().toISOString()} THREW ${e.message} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
           }
         })());
       } else {
-        const st = await sendMessage(env.BOT_TOKEN, chatId, finalMsg);
+        const st = await sendMessage(env.BOT_TOKEN, chatId, finalMsg, null, env);
         LOG(`sent success msg orv=${orvId} tg=${st}`);
       }
     } catch (e) {
@@ -955,7 +955,7 @@ function ghApi(env, path, method = 'GET') {
   );
 }
 
-async function sendMessage(token, chatId, text, replyMarkup = null) {
+async function sendMessage(token, chatId, text, replyMarkup = null, env = null) {
   // Split messages > 4096 chars
   const parts = splitMessage(text, 4096);
   let lastStatus = null;
@@ -971,7 +971,10 @@ async function sendMessage(token, chatId, text, replyMarkup = null) {
     lastStatus = r.status;
     // Log kalau gagal (debug)
     if (!r.ok) {
-      try { await env.ORVELLA_KV.put('orv:senderr', `${new Date().toISOString()} status=${r.status} :: ${await r.text()}`, { expirationTtl: 3600 }); } catch (_) {}
+      try {
+        const errBody = await r.text();
+        if (env) await env.ORVELLA_KV.put('orv:senderr', `${new Date().toISOString()} status=${r.status} :: ${errBody}`, { expirationTtl: 3600 });
+      } catch (_) {}
     }
   }
   return lastStatus;
