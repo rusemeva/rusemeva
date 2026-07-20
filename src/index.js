@@ -132,6 +132,28 @@ export default {
 
         const update = await request.json();
 
+        // === #7 INLINE KEYBOARD: tangani callback_query (tombol /setting) ===
+        if (update.callback_query) {
+          const cb = update.callback_query;
+          const cbFromId = cb.from?.id;
+          const cbChatId = cb.message?.chat?.id;
+          const cbData = cb.data || '';
+          // Access control
+          if (cbFromId !== ALLOWED_USER_ID) {
+            return response;
+          }
+          if (cbData.startsWith('set:')) {
+            const key = cbData.slice(4);
+            ctx.waitUntil(handleSettingSelect(`/setting ${key}`, cbChatId, env));
+            // Edit pesan biar tombol gak berkedip (opsional: biarkan)
+            ctx.waitUntil(fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/answerCallbackQuery`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ callback_query_id: cb.id })
+            }));
+          }
+          return response;
+        }
+
         // Access control — tolak siapa pun selain owner
         const incoming = update.message || update.edited_message;
         const fromId = incoming?.from?.id;
@@ -215,10 +237,19 @@ const SPEED_FACTOR = {
   max: 2.5 / 5.5,       // slower ~5.5x lebih lambat
 };
 
-function estEncodeSeconds(profileKey, recordSeconds) {
-  const f = SPEED_FACTOR[profileKey] || SPEED_FACTOR.balanced;
+function estEncodeSeconds(profileKey, recordSeconds, probeRes) {
+  let f = SPEED_FACTOR[profileKey] || SPEED_FACTOR.balanced;
+  if (probeRes) {
+    const w = parseInt(probeRes, 10) || 1280;
+    const ratio = (w * w) / (1280 * 1280);
+    const r = Math.max(0.5, Math.min(3.5, ratio));
+    f = f / r;
+  }
   // waktu encode = durasi rekam / faktor (faktor>1 = lebih cepat dari realtime)
-  return Math.round(recordSeconds / f);
+  let s = recordSeconds / f;
+  if (s > 2 * 3600) s += 20 * 60;
+  else s += 10 * 60;
+  return Math.round(s);
 }
 
 async function getProfile(env, chatId) {
@@ -253,7 +284,7 @@ async function handleSetting(chatId, env) {
     msg += `     ${p.note}\n\n`;
   }
   msg += '💡 Estimasi waktu encode otomatis disesuaikan durasi rekam. Contoh pakai /record 120m.';
-  await sendMessage(env.BOT_TOKEN, chatId, msg);
+  await sendMessage(env.BOT_TOKEN, chatId, msg, settingsKeyboard());
 }
 
 async function handleSettingSelect(text, chatId, env) {
@@ -384,6 +415,42 @@ async function handleRecord(text, chatId, env) {
     }
   } catch (_) { /* kalau GH API error, biarkan lanjut (fail-open) */ }
 
+  // === #1 PROBE m3u8: ambil resolusi asli buat estimasi AKURAT ===
+  // Worker fetch playlist, cari #EXT-X-STREAM-INF:RESOLUTION=WxH (atau variant).
+  // Map resolusi -> faktor realtime (1080p60 jauh lebih berat dr 720p60).
+  let probeRes = '';
+  let probeFpsHint = '';
+  try {
+    const m3u8Resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': 'Mozilla/5.0', ...(referer ? { 'Referer': referer } : {}) } });
+    if (m3u8Resp.ok) {
+      const txt = await m3u8Resp.text();
+      // Cari resolusi tertinggi di STREAM-INF
+      const resMatch = txt.match(/RESOLUTION=(\d+)x(\d+)/g);
+      if (resMatch) {
+        let best = 0;
+        for (const m of resMatch) {
+          const w = parseInt(m.match(/(\d+)x/)[1], 10);
+          if (w > best) best = w;
+        }
+        probeRes = String(best);
+      }
+      // Framerate hint (FRAME-RATE=60)
+      const fr = txt.match(/FRAME-RATE=(\d+(\.\d+)?)/);
+      if (fr) probeFpsHint = fr[1];
+    }
+  } catch (_) { /* probe gagal = fallback estimasi default */ }
+
+  // Faktor realtime berdasarkan resolusi (720p baseline 2.5x; makin tinggi makin lambat)
+  function rtFactorForRes(resStr, baseFactor) {
+    const w = parseInt(resStr, 10) || 1280;
+    // 720p(1280) baseline 1.0; 1080p(1920) ~1.8x lebih lambat; 480p ~0.6x
+    const ratio = (w * w) / (1280 * 1280); // area piksel relatif thd 720p
+    // clamp biar gak meledak
+    const r = Math.max(0.5, Math.min(3.5, ratio));
+    return baseFactor / r;
+  }
+
   // Validate URL
   if (!url.startsWith('http')) {
     await sendMessage(env.BOT_TOKEN, chatId, '❌ URL harus dimulai dengan http:// atau https://');
@@ -419,7 +486,7 @@ async function handleRecord(text, chatId, env) {
 
   // === #4 ESTIMASI SEBELUM REKAM: hitung & tampilkan di notif mulai ===
   const recSec = duration;
-  const encSec = estEncodeSeconds(profileKey, recSec);
+  const encSec = estEncodeSeconds(profileKey, recSec, probeRes);
   const totalSec = recSec + encSec;
   const LIMIT = 6 * 3600;
   let estLine = `⏱ Estimasi: rekam ${formatDuration(recSec)} + encode ~${formatDuration(encSec)} (total ~${formatDuration(totalSec)})`;
@@ -441,6 +508,7 @@ async function handleRecord(text, chatId, env) {
       `📦 File: ${filename}\n` +
       `⚙️ Encode: <b>${profile.label}</b> (${profile.preset}, crf ${profile.crf})\n`;
     if (referer) msg += `🔗 Referer: <code>${escapeHtml(referer)}</code>\n`;
+    if (probeRes) msg += `🖥 Sumber: ${probeRes}p${probeFpsHint ? ' @' + probeFpsHint + 'fps' : ''}\n`;
     msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
     await sendMessage(env.BOT_TOKEN, chatId, msg);
   } else {
@@ -731,16 +799,24 @@ function ghApi(env, path, method = 'GET') {
   );
 }
 
-async function sendMessage(token, chatId, text) {
+async function sendMessage(token, chatId, text, replyMarkup = null) {
   // Split messages > 4096 chars
   const parts = splitMessage(text, 4096);
   for (const part of parts) {
+    const body = { chat_id: chatId, text: part, parse_mode: 'HTML' };
+    if (replyMarkup) body.reply_markup = replyMarkup;
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: part, parse_mode: 'HTML' })
+      body: JSON.stringify(body)
     });
   }
+}
+
+function settingsKeyboard() {
+  const keys = Object.keys(ENCODE_PROFILES);
+  const row = keys.map(k => ({ text: ENCODE_PROFILES[k].label, callback_data: `set:${k}` }));
+  return { inline_keyboard: [row] };
 }
 
 function splitMessage(text, maxLen) {

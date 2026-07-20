@@ -326,12 +326,42 @@ if job_status == "success":
         else:
             # Encode gagal / file tidak ada -> jujur lapor, jangan diam
             print("⚠️ HEVC file tidak ada -> encode gagal, lapor ke user.", flush=True)
+            # === #5 ERROR CLASSIFICATION: pesan jujur + saran berdasarkan FAIL_REASON ===
+            reason = os.environ.get("FAIL_REASON", "unknown") or "unknown"
+            reason_map = {
+                "disk_full": (
+                    "💽 <b>Penyebab: Disk runner GitHub penuh (No space left on device).</b>\n"
+                    "ℹ️ GitHub runner cuma punya ~14GB; video besar + original numpuk.\n"
+                    "💡 Saran: coba lagi nanti (runner di-reset), atau rekam durasi lebih pendek."
+                ),
+                "codec_or_corrupt": (
+                    "🎞 <b>Penyebab: Codec/stream bermasalah (file sumber korup atau encoder libx265 hilang).</b>\n"
+                    "ℹ️ Biasanya m3u8 terputus saat rekam, menghasilkan file tidak valid.\n"
+                    "💡 Saran: cek koneksi stream, atau coba preset berbeda. Sistem auto-retry 1 level lebih cepat."
+                ),
+                "timeout_or_killed": (
+                    "⏱ <b>Penyebab: Encode ke-potong (timeout 6 jam / SIGKILL).</b>\n"
+                    "ℹ️ Video terlalu panjang untuk preset ini di runner 2-CPU.\n"
+                    "💡 Saran: sistem otomatis turun preset (auto-downgrade) atau auto-retry lebih cepat. Coba lagi."
+                ),
+                "ffmpeg_error": (
+                    "⚙️ <b>Penyebab: ffmpeg error (conversion failed / frame error).</b>\n"
+                    "ℹ️ Lihat log encode untuk detail.\n"
+                    "💡 Saran: ulangi rekam, atau laporkan ke admin kalau berulang."
+                ),
+                "unknown": (
+                    "❓ <b>Penyebab: tidak terklasifikasi.</b>\n"
+                    "ℹ️ Cek log encode untuk detail lengkap.\n"
+                    "💡 Sistem otomatis mencoba ulang 1 level lebih cepat (lihat notifikasi berikutnya)."
+                ),
+            }
+            reason_text = reason_map.get(reason, reason_map["unknown"])
             send_message(
                 f"❌ <b>Encode HEVC gagal.</b>\n\n"
                 f"{id_line()}"
                 f"📦 Source: <code>{filename}</code>\n"
-                f"ℹ️ Hasil HEVC tidak dikirim. Cek log encode: {run_url}\n"
-                f"🔄 Sistem otomatis mencoba ulang 1 level lebih cepat (lihat notifikasi berikutnya)."
+                f"{reason_text}\n"
+                f"🔗 Log: {run_url}"
             )
 elif job_status == "cancelled":
     # Pesan jujur tergantung phase:
