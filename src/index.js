@@ -122,6 +122,17 @@ export default {
         }
       }
 
+      // === Admin: getWebhookInfo ===
+      if (request.method === 'GET' && url.pathname === '/_whinfo') {
+        try {
+          const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getWebhookInfo`);
+          const j = await r.json();
+          return new Response(JSON.stringify(j, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } catch (e) {
+          return new Response('ERR: ' + e.message, { status: 500 });
+        }
+      }
+
       // === Admin: baca KV log (debug) ===
       if (request.method === 'GET' && url.pathname === '/_kv') {
         try {
