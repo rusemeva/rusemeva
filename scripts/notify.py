@@ -57,8 +57,9 @@ def fmt_dur(s):
 
 def eta_clock(mins_from_now):
     from datetime import datetime, timedelta
-    t = datetime.utcnow() + timedelta(minutes=mins_from_now)
-    return t.strftime("%H:%M") + " UTC"
+    # WIB = UTC+7
+    t = datetime.utcnow() + timedelta(minutes=mins_from_now + 7 * 60)
+    return t.strftime("%H:%M") + " WIB"
 
 hevc_file = os.environ.get("HEVC_FILE", "")
 hevc_size = os.environ.get("HEVC_SIZE", "")

@@ -75,8 +75,9 @@ def fmt_dur(secs):
 def fmt_clock(secs_from_now):
     if secs_from_now is None or secs_from_now <= 0:
         return None
-    t = datetime.utcnow() + timedelta(seconds=secs_from_now)
-    return t.strftime("%H:%M") + " UTC"
+    # WIB = UTC+7
+    t = datetime.utcnow() + timedelta(seconds=secs_from_now + 7 * 3600)
+    return t.strftime("%H:%M") + " WIB"
 
 
 def read_state():
