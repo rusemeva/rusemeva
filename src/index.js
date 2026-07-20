@@ -47,6 +47,14 @@ export default {
     try {
       const url = new URL(request.url);
 
+      // === LOG: catat tiap request ke KV (debug bot gak respon) ===
+      try {
+        const bodyPreview = request.method === 'POST'
+          ? (await request.clone().text()).slice(0, 300)
+          : url.pathname;
+        ctx.waitUntil(env.ORVELLA_KV.put('orv:lastreq', `${new Date().toISOString()} ${request.method} ${url.pathname} :: ${bodyPreview}`, { expirationTtl: 3600 }));
+      } catch (_) {}
+
       // === Admin: set webhook Telegram ke worker ini (fix bot "gak respon") ===
       // Panggil: GET /_setwh?k=SECRET  -> set webhook ke origin worker.
       if (request.method === 'GET' && url.pathname === '/_setwh') {
