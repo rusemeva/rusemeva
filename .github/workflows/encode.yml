@@ -286,8 +286,8 @@ jobs:
           PHASE: hevc
         run: python3 scripts/notify.py
 
-      - name: Hapus GitHub Release sementara (cleanup storage)
-        if: always()
+      - name: Hapus GitHub Release sementara (cleanup storage) — HANYA kalau encode sukses
+        if: success()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
