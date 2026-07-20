@@ -72,6 +72,25 @@ export default {
         // === #7 Endpoint /rtcal: kalibrasi RT otomatis ===
         // GET  /rtcal?preset=veryfast  -> balik persen kalibrasi (rt_aktual/rt_teori*100) atau "" kalau kosong
         // POST /rtcal  body {preset, rt, secret} -> simpan & rata-rata ke KV orv:rtcal:<preset>
+        if (url.pathname === '/link') {
+          try {
+            const body = await request.json();
+            const runId = (body.run_id || '').toString();
+            const orvId = (body.orv_id || '').toString();
+            const secret = (body.secret || '').toString();
+            if (env.PROGRESS_SECRET && secret !== env.PROGRESS_SECRET) {
+              return new Response('forbidden', { status: 403 });
+            }
+            if (runId && orvId) {
+              await env.ORVELLA_KV.put(`run:${runId}`, orvId, { expirationTtl: 21600 });
+              return new Response('OK');
+            }
+            return new Response('bad', { status: 400 });
+          } catch (_) {
+            return new Response('err', { status: 500 });
+          }
+        }
+
         if (url.pathname === '/rtcal') {
           try {
             if (request.method === 'GET') {
