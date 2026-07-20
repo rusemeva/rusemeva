@@ -64,6 +64,17 @@ export default {
         }
       }
 
+      // === Admin: cek bot identity (debug) ===
+      if (request.method === 'GET' && url.pathname === '/_me') {
+        try {
+          const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`);
+          const j = await r.json();
+          return new Response(JSON.stringify(j), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } catch (e) {
+          return new Response('err: ' + e.message, { status: 500 });
+        }
+      }
+
       // === #7 Endpoint /rtcal GET: baca kalibrasi RT (realtime_x aktual, rata-rata histori) ===
       // encode.yml panggil GET ini buat dapat BASE_RT yg akurat.
       if (request.method === 'GET' && url.pathname === '/rtcal') {
