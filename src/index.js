@@ -611,6 +611,7 @@ async function handleRecord(text, chatId, env, ctx) {
   LOG(`before triggerGitHubActions`);
   const trig = await triggerGitHubActions(env, url, duration, chatId, filename, referer, profile);
   LOG(`after triggerGitHubActions`);
+  const orvId = trig.orvId;
   const trigResp = await trig.resp; // fetch returns Promise -> await dulu
   LOG(`trigResp status=${trigResp.status}`);
   // Drain body biar subrequest pool gak ke-lock (penyebab sendMessage hang)
