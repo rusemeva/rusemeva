@@ -93,6 +93,17 @@ export default {
         }
       }
 
+      // === Admin: baca KV log (debug) ===
+      if (request.method === 'GET' && url.pathname === '/_kv') {
+        try {
+          const key = url.searchParams.get('k') || 'orv:lastreq';
+          const v = await env.ORVELLA_KV.get(key);
+          return new Response(v || '(empty)', { status: 200 });
+        } catch (e) {
+          return new Response('err: ' + e.message, { status: 500 });
+        }
+      }
+
       // === #7 Endpoint /rtcal GET: baca kalibrasi RT (realtime_x aktual, rata-rata histori) ===
       // encode.yml panggil GET ini buat dapat BASE_RT yg akurat.
       if (request.method === 'GET' && url.pathname === '/rtcal') {
