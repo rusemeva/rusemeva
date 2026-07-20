@@ -83,6 +83,8 @@ export default {
             }
             if (runId && orvId) {
               await env.ORVELLA_KV.put(`run:${runId}`, orvId, { expirationTtl: 21600 });
+              // Reverse map: orv_id -> run_id (biar /cancel <ORV> bisa resolve run)
+              await env.ORVELLA_KV.put(`orv:${orvId}:run`, String(runId), { expirationTtl: 21600 });
               return new Response('OK');
             }
             return new Response('bad', { status: 400 });
@@ -561,25 +563,30 @@ async function handleCancel(chatId, env, text) {
         }
       } catch (_) {}
 
-      // Match by run id di URL, atau by orv_id di client_payload (rekam)
-      // Cara praktis: bandingkan dgn tail URL run atau substring.
-      const t = targetId.replace(/^.*\/runs\//, '').replace(/[^A-Za-z0-9-]/g, '');
-      matched = inProgress.filter(r =>
-        String(r.id) === t ||
-        (r.html_url && r.html_url.includes(t)) ||
-        (r.name && r.name.includes(t))
-      );
-      // Kalau gak ketemu by run-id, anggap targetId = orv_id; perlu resolve lewat jobs.
-      if (!matched.length) {
-        for (const run of inProgress) {
-          try {
-            const jr = await ghApi(env, `actions/runs/${run.id}`);
-            const jd = await jr.json();
-            const cp = jd?.client_payload || {};
-            if (cp.orv_id === targetId) { matched.push(run); break; }
-          } catch (_) {}
+      // Resolve run IDs dari reverse-map KV (orv_id -> run_id)
+      // encode tulis `orv:<id>:run`, record tulis `orv:<id>:recrun`
+      try {
+        const encRun = await env.ORVELLA_KV.get(`orv:${targetId}:run`);
+        const recRun = await env.ORVELLA_KV.get(`orv:${targetId}:recrun`);
+        const ids = [encRun, recRun].filter(Boolean);
+        if (ids.length) {
+          for (const rid of ids) {
+            const run = inProgress.find(r => String(r.id) === String(rid));
+            if (run) matched.push(run);
+          }
         }
+      } catch (_) {}
+
+      // Kalau reverse-map kosong, fallback: match by run-id di URL / substring
+      if (!matched.length) {
+        const t = targetId.replace(/^.*\/runs\//, '').replace(/[^A-Za-z0-9]/g, '');
+        matched = inProgress.filter(r =>
+          String(r.id) === t ||
+          (r.html_url && r.html_url.includes(t)) ||
+          (r.name && r.name.toLowerCase().includes(targetId.toLowerCase()))
+        );
       }
+
       if (!matched.length) {
         await sendMessage(env.BOT_TOKEN, chatId,
           `⚠️ Tidak ada proses aktif dengan ID <code>${targetId}</code>.\nGunakan /status untuk lihat daftar ID/run.`);
@@ -589,7 +596,7 @@ async function handleCancel(chatId, env, text) {
         await ghApi(env, `actions/runs/${run.id}/cancel`, 'POST');
       }
       await sendMessage(env.BOT_TOKEN, chatId,
-        `🚫 <b>1 rekaman dibatalkan.</b>\n🔗 ${matched[0].html_url}`);
+        `🚫 <b>${matched.length} rekaman dibatalkan.</b>\n🔗 ${matched[0].html_url}`);
       return new Response('OK');
     }
 

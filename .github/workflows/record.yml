@@ -64,6 +64,7 @@ jobs:
             echo "duration_label=${{ inputs.duration_label }}" >> $GITHUB_OUTPUT
             echo "referer=${{ inputs.referer }}" >> $GITHUB_OUTPUT
             echo "simulate_over_2gb=${{ inputs.simulate_over_2gb }}" >> $GITHUB_OUTPUT
+            echo "orv_id=${{ inputs.orv_id || '' }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Generate filename
@@ -73,6 +74,24 @@ jobs:
           DURATION_LABEL="${{ steps.inputs.outputs.duration_label }}"
           FNAME="Orvella-Asset-${NOW}-${DURATION_LABEL}.mp4"
           echo "filename=$FNAME" >> $GITHUB_OUTPUT
+
+      # === Link run rekam -> ORV-ID ke KV (biar /cancel <ORV> bisa resolve) ===
+      - name: Link rekam run ke ORV-ID (KV)
+        if: always()
+        continue-on-error: true
+        env:
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
+          WORKER_URL: ${{ secrets.WORKER_URL || 'https://rusemeva.rusemeva.workers.dev' }}
+          PROGRESS_SECRET: ${{ secrets.PROGRESS_SECRET || '' }}
+        run: |
+          if [ -n "$ORV_ID" ]; then
+            curl -fsS --retry 2 --retry-delay 3 -X POST "$WORKER_URL/link" \
+              -H "Content-Type: application/json" \
+              -d "{\"run_id\":\"${{ github.run_id }}\",\"orv_id\":\"$ORV_ID\",\"secret\":\"$PROGRESS_SECRET\"}" 2>/dev/null \
+              && echo "🔗 rekam run ${{ github.run_id }} -> $ORV_ID" || echo "⚠️ link gagal (non-fatal)"
+          else
+            echo "ℹ️ tidak ada orv_id, skip link"
+          fi
 
       - name: Install dependencies (apt ffmpeg untuk rekam + static ffmpeg untuk HEVC)
         run: |
