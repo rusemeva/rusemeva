@@ -233,7 +233,7 @@ if job_status == "success":
     thumb_path = thumb_file if (has_thumb and os.path.isfile(thumb_file)) else ""
 
     # --- Phase original: kirim video ORIGINAL (asli, tidak diubah) ---
-    # Kalau original > 2GB (limit Bot API + GitHub), dilewati — HEVC tetap dikirim.
+    # Kalau original > 2GB (limit Bot API 2GB), dilewati — HEVC di-encode terpisah & dikirim JIKA sukses.
     if phase in ("original", "both"):
         caption_orig = (
             f"✅ <b>Rekaman selesai!</b>\n\n"
@@ -245,11 +245,12 @@ if job_status == "success":
             f"📶 Bitrate: {vbitrate}"
         )
         if orig_bytes > 2 * 1024 * 1024 * 1024:
-            print(f"⚠️ ORIGINAL {orig_bytes/1024/1024/1024:.2f} GB > 2GB — dilewati (limit). HEVC tetap dikirim.", flush=True)
+            print(f"⚠️ ORIGINAL {orig_bytes/1024/1024/1024:.2f} GB > 2GB — dilewati (limit Bot API).", flush=True)
             send_message(
-                f"⚠️ <b>Original {orig_bytes/1024/1024/1024:.2f} GB &gt; 2GB limit</b> — tidak dikirim.\n"
+                f"⚠️ <b>Original {orig_bytes/1024/1024/1024:.2f} GB &gt; 2GB limit</b> — tidak dikirim ke Telegram (batas Bot API 2GB).\n"
                 f"📦 File: <code>{filename}</code>\n"
-                f"🎞 HEVC 10-bit (lebih kecil) tetap dikirim di pesan berikutnya."
+                f"🎞 Video ini di-encode ke HEVC 10-bit di workflow terpisah (<code>orvella-encode</code>).\n"
+                f"📤 Hasil HEVC akan dikirim <b>JIKA encode berhasil</b>; bila gagal akan ada notifikasi error."
             )
         elif os.path.isfile(filename) and os.path.getsize(filename) > 0:
             print("📤 Mengirim video ORIGINAL...", flush=True)
@@ -262,17 +263,17 @@ if job_status == "success":
             elif res is True:
                 print("✅ ORIGINAL terkirim (via fallback, tanpa file_id).", flush=True)
 
-            # Info: HEVC akan di-encode di workflow TERPISAH (orvella-encode, full 6 jam)
+            # Info: HEVC di-encode di workflow TERPISAH (orvella-encode, full 6 jam)
             enc_secs, rt = estimate_encode(human_dur)
             warn = ""
             if enc_secs > 6 * 3600:
-                warn = "\n⚠️ <b>Estimasi &gt; 6 jam</b> — encode bisa ke-potong limit GitHub! Turun ke preset lebih cepat (veryfast/slow)."
+                warn = "\n⚠️ <b>Estimasi &gt; 6 jam</b> — encode bisa ke-potong limit GitHub (auto-downgrade ke preset lebih cepat otomatis dilakukan di encode.yml)."
             send_message(
-                f"⏳ <b>HEVC 10-bit akan di-encode terpisah</b> (workflow <code>orvella-encode</code>, hingga 6 jam penuh).\n"
+                f"⏳ <b>HEVC 10-bit sedang di-encode terpisah</b> (workflow <code>orvella-encode</code>, hingga 6 jam).\n"
                 f"🎚 Preset: <code>{hevc_preset}</code> (CRF {hevc_crf})\n"
                 f"⏱ Estimasi encode: <b>{fmt_dur(enc_secs)}</b> (~{rt}x realtime)\n"
-                f"🕐 Prediksi HEVC masuk ~<b>{eta_clock(enc_secs // 60)}</b>\n"
-                f"📦 Hasil HEVC akan dikirim di pesan berikutnya setelah encode selesai.{warn}"
+                f"🕐 Prediksi selesai ~<b>{eta_clock(enc_secs // 60)}</b>\n"
+                f"📤 Hasil akan dikirim <b>JIKA berhasil</b>; bila gagal akan ada laporan error.{warn}"
             )
 
     # --- Phase hevc: kirim video HEVC 10-bit (metadata asli hasil encode) ---
@@ -290,6 +291,14 @@ if job_status == "success":
                 f"📶 Bitrate: {hevc_br}"
             )
             send_video_with_fallback(hevc_file, caption_hevc, hevc_thumb_path)
+        else:
+            # Encode gagal / file tidak ada -> jujur lapor, jangan diam
+            print("⚠️ HEVC file tidak ada -> encode gagal, lapor ke user.", flush=True)
+            send_message(
+                f"❌ <b>Encode HEVC gagal.</b>\n\n"
+                f"📦 Source: <code>{filename}</code>\n"
+                f"ℹ️ Hasil HEVC tidak dikirim. Cek log encode: {run_url}"
+            )
 
 elif job_status == "cancelled":
     send_message(
@@ -331,6 +340,5 @@ else:
     send_message(
         f"❌ <b>Rekaman gagal.</b>\n\n"
         f"📦 File: <code>{filename}</code>\n"
-        f"ℹ️ Sistem sudah mencoba ulang otomatis hingga 3x.\n"
         f"🔗 Cek log: {run_url}{log_block}"
     )

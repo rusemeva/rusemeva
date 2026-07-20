@@ -436,7 +436,7 @@ jobs:
           fi
           # Trigger orvella-encode
           echo "🚀 Trigger orvella-encode..."
-          gh api repos/${{ github.repository }}/dispatches \
+          if gh api repos/${{ github.repository }}/dispatches \
             -f event_type=encode-request \
             -f "client_payload[filename]=${FILE}" \
             -f "client_payload[chat_id]=${CHAT_ID}" \
@@ -444,9 +444,13 @@ jobs:
             -f "client_payload[duration]=${DURATION}" \
             -f "client_payload[release_tag]=${TAG}" \
             -f "client_payload[hevc_preset]=${HEVC_PRESET}" \
-            -f "client_payload[hevc_crf]=${HEVC_CRF}" \
-            && echo "✅ orvella-encode di-trigger" \
-            || echo "⚠️ Gagal trigger (cek permission actions:write)"
+            -f "client_payload[hevc_crf]=${HEVC_CRF}" ; then
+            echo "✅ orvella-encode di-trigger"
+          else
+            echo "⚠️ Gagal trigger orvella-encode"
+            CHAT_ID="$CHAT_ID" BOT_TOKEN="${{ secrets.BOT_TOKEN }}" TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
+              python3 scripts/send_message.py "⚠️ <b>Gagal memicu encode HEVC.</b> Source tersimpan di release temp <code>${TAG}</code> tapi workflow encode tidak jalan. Cek permission <code>actions: write</code> di record.yml." || true
+          fi
 
       - name: Buat .txt (update log kecil) + Release ringan
         if: success()
