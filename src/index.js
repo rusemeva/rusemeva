@@ -902,15 +902,22 @@ function ghApi(env, path, method = 'GET') {
 async function sendMessage(token, chatId, text, replyMarkup = null) {
   // Split messages > 4096 chars
   const parts = splitMessage(text, 4096);
+  let lastStatus = null;
   for (const part of parts) {
     const body = { chat_id: chatId, text: part, parse_mode: 'HTML' };
     if (replyMarkup) body.reply_markup = replyMarkup;
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    lastStatus = r.status;
+    // Log kalau gagal (debug)
+    if (!r.ok) {
+      try { await env.ORVELLA_KV.put('orv:senderr', `${new Date().toISOString()} status=${r.status} :: ${await r.text()}`, { expirationTtl: 3600 }); } catch (_) {}
+    }
   }
+  return lastStatus;
 }
 
 function settingsKeyboard() {
