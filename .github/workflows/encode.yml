@@ -122,12 +122,18 @@ jobs:
       - name: Auto-downgrade preset kalau estimasi > 5j50m
         id: autodg
         run: |
-          # Tabel faktor realtime (relatif ke 720p60, kalibrasi bench) + CRF default tiap profil
-          declare -A RT=( [speed]=3.5 [balanced]=1.0 [quality]=2.5 [max]=0.5 )
-          declare -A CRF=( [speed]=24 [balanced]=22 [quality]=24 [max]=20 )
-          # Urutan cascade lambat -> cepat
-          ORDER=( max quality balanced speed )
-          PRESET="${{ steps.inputs.outputs.hevc_preset || 'balanced' }}"
+          # Faktor realtime x265 (relatif medium=1.0x), kalibrasi bench 2 vCPU GitHub runner.
+          # Semakin KECIL = makin lambat. Batas aman job = 360m (6 jam, hard limit GitHub).
+          # Sumber: bench riil (veryslow=0.5x) + ladder x265 standar.
+          declare -A RT=(
+            [ultrafast]=20 [superfast]=12 [veryfast]=6 [faster]=4 [fast]=3
+            [medium]=1.0 [slow]=0.7 [slower]=0.45 [veryslow]=0.25 [placebo]=0.1
+            # alias profil UI lama (jaga kompatibilitas)
+            [speed]=6 [balanced]=1.0 [quality]=0.7 [max]=0.25
+          )
+          # Ladder x265 lambat -> cepat (buat cascade downgrade)
+          LADDER=( placebo veryslow slower slow medium fast faster veryfast superfast ultrafast )
+          PRESET="${{ steps.inputs.outputs.hevc_preset || 'medium' }}"
           CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '22' }}"
           DUR="${{ steps.inputs.outputs.duration }}"
           [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
@@ -149,28 +155,31 @@ jobs:
           else
             echo "ℹ️ ffprobe gak tersedia / file kosong, pakai faktor 720p60 (1.0x)"
           fi
-          # realtime efektif = faktor preset x faktor resolusi
-          rt=$(awk "BEGIN{printf \"%.4f\", ${RT[$PRESET]:-1.0} * $RES_FACTOR}")
+          # faktor preset: kalau gak dikenal (mis. "slower" lama), asumsi LAMBAT (0.3)
+          # biar auto-downgrade PASTI jalan, bukan kebetulan lewat.
+          PRT=${RT[$PRESET]:-0.3}
+          rt=$(awk "BEGIN{printf \"%.4f\", $PRT * $RES_FACTOR}")
           est_min=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $rt) + $OVERHEAD_MIN}")
           echo "🎚 Preset dipilih: $PRESET (CRF $CRF_VAL)"
           echo "⏱ Estimasi encode: ${est_min}m (durasi=$((DUR/60))m, ${rt}x realtime)"
           FINAL="$PRESET"
           FINAL_CRF="$CRF_VAL"
           if [ "$est_min" -gt "$LIMIT_MIN" ]; then
-            echo "⚠️ Estimasi ${est_min}m > ${LIMIT_MIN}m -> cari preset lebih cepat..."
+            echo "⚠️ Estimasi ${est_min}m > ${LIMIT_MIN}m -> cari preset lebih cepat (tertinggi yg muat)..."
             found=0
-            for p in "${ORDER[@]}"; do
+            for p in "${LADDER[@]}"; do
               if [ "$p" = "$PRESET" ]; then found=1; continue; fi
               if [ "$found" = "1" ]; then
-                nrt=$(awk "BEGIN{printf \"%.4f\", ${RT[$p]} * $RES_FACTOR}")
+                prt=${RT[$p]:-1.0}
+                nrt=$(awk "BEGIN{printf \"%.4f\", $prt * $RES_FACTOR}")
                 nest=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $nrt) + $OVERHEAD_MIN}")
                 if [ "$nest" -le "$LIMIT_MIN" ]; then
-                  FINAL="$p"; FINAL_CRF="${CRF[$p]}"; echo "✅ Turun ke: $FINAL (CRF $FINAL_CRF, estimasi ${nest}m)"; break
+                  FINAL="$p"; FINAL_CRF="$CRF_VAL"; echo "✅ Turun ke: $FINAL (CRF $FINAL_CRF, estimasi ${nest}m)"; break
                 fi
               fi
             done
             if [ "$FINAL" = "$PRESET" ]; then
-              echo "⚠️ Sudah di preset tercepat ($FINAL), gak bisa turun lagi."
+              echo "⚠️ Sudah di preset tercepat ($FINAL), gak bisa turun lagi (risiko timeout)."
             fi
           else
             echo "✅ Estimasi aman, pakai preset asli: $FINAL"
