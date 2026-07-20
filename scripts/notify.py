@@ -301,11 +301,25 @@ if job_status == "success":
             )
 
 elif job_status == "cancelled":
-    send_message(
-        f"🚫 <b>Rekaman dibatalkan.</b>\n\n"
-        f"📦 File: <code>{filename}</code>\n"
-        f"🔗 Run: {run_url}"
-    )
+    # Pesan jujur tergantung phase:
+    # - phase=hevc (encode) -> yang dibatalkan ENCODE-nya, rekaman SUDAH SELESAI (masih utuh di release).
+    # - phase record/other -> rekaman dibatalkan.
+    if phase == "hevc":
+        msg = (
+            f"⏹ <b>Encode dibatalkan.</b>\n\n"
+            f"📦 Source: <code>{filename}</code>\n"
+            f"ℹ️ Rekaman ASLI tetap utuh di GitHub release (tidak terhapus).\n"
+        )
+        if release_url:
+            msg += f"🔗 Unduh source: {release_url}\n"
+        msg += f"🔗 Run encode: {run_url}"
+    else:
+        msg = (
+            f"🚫 <b>Rekaman dibatalkan.</b>\n\n"
+            f"📦 File: <code>{filename}</code>\n"
+            f"🔗 Run: {run_url}"
+        )
+    send_message(msg)
 else:
     # --- Ambil tail log GH run biar owner tahu KENAPA gagal ---
     run_log = ""
