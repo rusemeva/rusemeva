@@ -79,9 +79,32 @@ export default {
           }
         }
 
-        // === #7 Endpoint /rtcal: kalibrasi RT otomatis ===
-        // GET  /rtcal?preset=veryfast  -> balik persen kalibrasi (rt_aktual/rt_teori*100) atau "" kalau kosong
-        // POST /rtcal  body {preset, rt, secret} -> simpan & rata-rata ke KV orv:rtcal:<preset>
+        // === #7 Endpoint /rtcal POST: simpan kalibrasi RT (realtime_x aktual) ===
+        // GET sudah di-handle di awal fetch (baca nilai). Ini handler POST (tulis).
+        if (url.pathname === '/rtcal') {
+          try {
+            const body = await request.json();
+            const preset = (body.preset || '').toString();
+            const rt = parseFloat(body.rt);
+            const secret = (body.secret || '').toString();
+            if (env.PROGRESS_SECRET && secret !== env.PROGRESS_SECRET) {
+              return new Response('forbidden', { status: 403 });
+            }
+            if (preset && !isNaN(rt) && rt > 0) {
+              const prev = parseFloat(await env.ORVELLA_KV.get(`orv:rtcal:${preset}`) || '');
+              let avg = rt;
+              if (!isNaN(prev) && prev > 0) {
+                avg = (prev + rt) / 2;
+              }
+              await env.ORVELLA_KV.put(`orv:rtcal:${preset}`, avg.toFixed(4), { expirationTtl: 60*86400 });
+              return new Response(`ok avg=${avg.toFixed(4)}`, { status: 200 });
+            }
+            return new Response('bad', { status: 400 });
+          } catch (_) {
+            return new Response('err', { status: 500 });
+          }
+        }
+
         if (url.pathname === '/link') {
           try {
             const body = await request.json();
