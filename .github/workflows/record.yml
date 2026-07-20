@@ -448,7 +448,6 @@ jobs:
 
       - name: Upload ORIGINAL ke GitHub Release TEMP + trigger encode terpisah
         if: success()
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           CHAT_ID: ${{ steps.inputs.outputs.chat_id }}
@@ -460,32 +459,43 @@ jobs:
           HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
           ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
         run: |
-          set +e
+          set -e
           FILE="${{ steps.fname.outputs.filename }}"
+          # Pastikan FILE ada di working dir (repo root). Kalau cuma nama file,
+          # cari di repo root ATAU di folder recordings/.
+          if [ ! -f "$FILE" ]; then
+            for cand in "./$FILE" "./recordings/$FILE" "./downloads/$FILE"; do
+              if [ -f "$cand" ]; then FILE="$cand"; break; fi
+            done
+          fi
+          if [ ! -f "$FILE" ]; then
+            echo "❌ File original tidak ditemukan: ${{ steps.fname.outputs.filename }}"
+            echo "📂 Isi working dir:"; ls -la
+            exit 1
+          fi
+          echo "📄 File original: $FILE ($(numfmt --to=iec $(stat -c%s "$FILE" 2>/dev/null || echo 0)))"
           TAG="orvella-encode-${{ github.run_id }}"
           TEMP_NOTES="Orvella encode temp source (dihapus setelah encode). JANGAN dihapus manual sebelum encode selesai."
           # Buat release temp (kosong dulu)
           gh release create "$TAG" --repo "${{ github.repository }}" \
             --title "Orvella Encode Temp ${{ github.run_id }}" \
-            --notes "$TEMP_NOTES" 2>/dev/null || \
-          gh release create "$TAG" --repo "${{ github.repository }}" \
-            --title "Orvella Encode Temp ${{ github.run_id }}" --notes "$TEMP_NOTES"
+            --notes "$TEMP_NOTES"
           echo "📦 Temp release: $TAG"
-          # Upload source: kalau ter-segment, upload part-*.mp4; else upload file utuh
+          # Upload source: pakai relative path ./ (hindari gh 2.x glob bug "no matches found")
           if [ "${SEGMENTED:-0}" = "1" ] && ls segments/part-* >/dev/null 2>&1; then
             echo "🧩 Upload segment part-* ke temp..."
             for f in segments/part-*; do
-              gh release upload "$TAG" --repo "${{ github.repository }}" "$f" --clobber 2>/dev/null \
-                && echo "  ✅ $f" || echo "  ⚠️ gagal $f"
+              gh release upload "$TAG" --repo "${{ github.repository }}" "./$f" --clobber \
+                && echo "  ✅ $f" || { echo "  ❌ gagal $f"; exit 1; }
             done
           else
             echo "📤 Upload original utuh ($FILE) ke temp..."
-            gh release upload "$TAG" --repo "${{ github.repository }}" "$FILE" --clobber 2>/dev/null \
-              && echo "  ✅ $FILE" || echo "  ⚠️ gagal upload original"
+            gh release upload "$TAG" --repo "${{ github.repository }}" "./$FILE" --clobber \
+              || { echo "  ❌ gagal upload original"; exit 1; }
           fi
+          echo "✅ Upload selesai. Trigger encode..."
           # Trigger orvella-encode
-          echo "🚀 Trigger orvella-encode..."
-          if gh api repos/${{ github.repository }}/dispatches \
+          gh api repos/${{ github.repository }}/dispatches \
             -f event_type=encode-request \
             -f "client_payload[filename]=${FILE}" \
             -f "client_payload[chat_id]=${CHAT_ID}" \
@@ -494,13 +504,9 @@ jobs:
             -f "client_payload[release_tag]=${TAG}" \
             -f "client_payload[hevc_preset]=${HEVC_PRESET}" \
             -f "client_payload[hevc_crf]=${HEVC_CRF}" \
-            -f "client_payload[orv_id]=${ORV_ID}" ; then
-            echo "✅ orvella-encode di-trigger"
-          else
-            echo "⚠️ Gagal trigger orvella-encode"
-            CHAT_ID="$CHAT_ID" BOT_TOKEN="${{ secrets.BOT_TOKEN }}" TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
-              python3 scripts/send_message.py "⚠️ <b>Gagal memicu encode HEVC.</b> Source tersimpan di release temp <code>${TAG}</code> tapi workflow encode tidak jalan. Cek permission <code>actions: write</code> di record.yml." || true
-          fi
+            -f "client_payload[orv_id]=${ORV_ID}" \
+            && echo "✅ orvella-encode di-trigger" \
+            || { echo "⚠️ Gagal trigger orvella-encode"; exit 1; }
 
       - name: Buat .txt (update log kecil) + Release ringan
         if: success()

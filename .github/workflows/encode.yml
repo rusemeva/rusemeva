@@ -90,7 +90,7 @@ jobs:
           echo "📥 Download original dari release temp: $TAG / $RAW"
           mkdir -p /tmp/orvella_dl
           # Download SEMUA asset dari release temp (original utuh ATAU segment part-*)
-          gh release download "$TAG" --repo "${{ github.repository }}" --dir /tmp/orvella_dl 2>/dev/null \
+          gh release download "$TAG" --repo "${{ github.repository }}" --dir /tmp/orvella_dl \
             && echo "✅ Download semua asset release temp" \
             || echo "⚠️ gh release download gagal"
           echo "📂 Isi download:"
