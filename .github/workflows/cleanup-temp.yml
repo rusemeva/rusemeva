@@ -24,10 +24,20 @@ jobs:
           ACTIVE=$(gh api "repos/$REPO/actions/runs?per_page=30" \
             --jq '[.workflow_runs[] | select(.status=="in_progress") | .id] | join(" ")' 2>/dev/null || echo "")
           echo "🔎 Active runs: $ACTIVE"
+          # JANGAN hapus release temp orvella-encode-* kalau ada encode run masih jalan
+          # (tag nyimpen RECORD run_id, bukan ENCODE run_id -> harus cek nama workflow).
+          ENCODE_ACTIVE=$(gh api "repos/$REPO/actions/runs?per_page=50" \
+            --jq '[.workflow_runs[] | select(.status=="in_progress") | select(.name=="orvella-encode")] | length' 2>/dev/null || echo 0)
+          echo "🔎 Encode runs active: $ENCODE_ACTIVE"
           gh api "repos/$REPO/releases?per_page=100" \
             --jq '.[] | "\(.id) \(.tag_name) \(.created_at)"' 2>/dev/null | while read -r id tag created; do
             case "$tag" in
               orvella-encode-*|orvella-rescue-*)
+                # Jangan hapus kalau ada encode run masih jalan (butuh release ini)
+                if [ "${ENCODE_ACTIVE:-0}" -gt 0 ]; then
+                  echo "⏳ skip (ada encode run jalan): $tag"
+                  continue
+                fi
                 # Jangan hapus kalau record/encode run-nya masih jalan
                 runid="${tag#orvella-encode-}"
                 runid="${runid%%-*}"   # buang sisa kalau ada

@@ -198,17 +198,15 @@ jobs:
           echo "🔁 realtime_x dasar ($PRESET): ${BASE_RT}x"
 
           # === #7 KALIBRASI RT OTOMATIS ===
-          # Baca realtime_x riil yg disimpan tiap encode sukses ke KV (lewat worker).
-          # Kalau ada, pakai sebagai pengali (1.0 = netral). Makin banyak run, makin akurat.
-          CAL_PCT=""
+          # KV orv:rtcal:<preset> menyimpan realtime_x AKTUAL (rata-rata histori).
+          # Kalau ada, pakai sebagai BASE_RT (lebih akurat dari sample 60s).
+          CAL=""
           if command -v curl >/dev/null 2>&1; then
-            CAL_PCT=$(curl -fsS --retry 2 --retry-delay 2 "https://rusemeva.rusemeva.workers.dev/rtcal?preset=${PRESET}" 2>/dev/null | head -c 40)
+            CAL=$(curl -fsS --retry 2 --retry-delay 2 "https://rusemeva.rusemeva.workers.dev/rtcal?preset=${PRESET}" 2>/dev/null | head -c 40)
           fi
-          if [ -n "$CAL_PCT" ] && awk "BEGIN{exit !($CAL_PCT>0)}" 2>/dev/null; then
-            # KV nyimpan PERSEN kalibrasi (realtime_x_aktual / realtime_x_teori * 100)
-            # Terapkan: BASE_RT_baru = BASE_RT * (CAL_PCT/100)
-            BASE_RT=$(awk "BEGIN{printf \"%.4f\", $BASE_RT * ($CAL_PCT/100)}")
-            echo "🎯 Kalibrasi aktif: realtime_x disesuaikan ke ${BASE_RT}x (dari histori ${CAL_PCT}%)"
+          if [ -n "$CAL" ] && awk "BEGIN{exit !($CAL>0)}" 2>/dev/null; then
+            BASE_RT=$CAL
+            echo "🎯 Kalibrasi aktif: realtime_x disesuaikan ke ${BASE_RT}x (dari histori riil)"
           else
             echo "ℹ️ Belum ada kalibrasi untuk '$PRESET' — pakai sample riil."
           fi
@@ -270,7 +268,6 @@ jobs:
       - name: Encode to HEVC 10-bit (dari original, full 6 jam)
         id: hevc
         if: success()
-        continue-on-error: true
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -516,7 +513,7 @@ jobs:
             -f "client_payload[referer]=$REFERRER" \
             -f "client_payload[hevc_preset]=$NEXT_PRESET" \
             -f "client_payload[hevc_crf]=$NEXT_CRF" \
-            -f "client_payload[orv_id]=$ORV_ID-retry" \
+            -f "client_payload[orv_id]=$ORV_ID" \
             -f "client_payload[auto_retry]=1" || true
           echo "✅ Auto-retry dispatched ($NEXT_PRESET)."
 

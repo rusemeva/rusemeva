@@ -109,18 +109,15 @@ export default {
                 return new Response('forbidden', { status: 403 });
               }
               if (preset && !isNaN(rt) && rt > 0) {
-                // rt_teori dari ladder statis (sama kayak encode.yml)
-                const RT_TEORI = { ultrafast:20, superfast:12, veryfast:6, faster:4, fast:3, medium:1.0, slow:0.7, slower:0.45, veryslow:0.25, placebo:0.1, speed:6, balanced:1.0, quality:0.7, max:0.25 };
-                const teori = RT_TEORI[preset] || 1.0;
-                const pct = rt / teori * 100; // >100 = lebih lambat dari teori
-                // Rata-rata dengan histori (simpan nilai pct)
+                // Simpan realtime_x AKTUAL (bukan persen) biar encode.yml bisa pakai
+                // langsung sebagai BASE_RT. Rata-rata dengan histori biar stabil.
                 const prev = parseFloat(await env.ORVELLA_KV.get(`orv:rtcal:${preset}`) || '');
-                let avg = pct;
+                let avg = rt;
                 if (!isNaN(prev) && prev > 0) {
-                  avg = (prev + pct) / 2;
+                  avg = (prev + rt) / 2;
                 }
-                await env.ORVELLA_KV.put(`orv:rtcal:${preset}`, avg.toFixed(2), { expirationTtl: 60*86400 });
-                return new Response(`ok avg=${avg.toFixed(2)}`, { status: 200 });
+                await env.ORVELLA_KV.put(`orv:rtcal:${preset}`, avg.toFixed(4), { expirationTtl: 60*86400 });
+                return new Response(`ok avg=${avg.toFixed(4)}`, { status: 200 });
               }
               return new Response('bad', { status: 400 });
             }
