@@ -269,6 +269,9 @@ export default {
         } catch (e) {
           // Kalau handler error, kirim pesan error biar user tahu
           try {
+            await env.ORVELLA_KV.put('orv:rec-log', `${new Date().toISOString()} HANDLER_THREW: ${e.message}`, { expirationTtl: 3600 });
+          } catch (_) {}
+          try {
             await sendMessage(env.BOT_TOKEN, chatId,
               `⚠️ <b>Terjadi error:</b>\n<code>${escapeHtml(String(e.message || e))}</code>`
             );
@@ -439,6 +442,8 @@ async function handleSettingSelect(text, chatId, env) {
 
 async function handleRecord(text, chatId, env) {
   const parts = text.split(/\s+/);
+  const LOG = (s) => { try { env.ORVELLA_KV.put('orv:rec-log', `${new Date().toISOString()} ${s}`, { expirationTtl: 3600 }); } catch (_) {} };
+  LOG(`start chat=${chatId} parts=${parts.length}`);
 
   if (parts.length < 2) {
     await sendMessage(env.BOT_TOKEN, chatId,
@@ -503,6 +508,7 @@ async function handleRecord(text, chatId, env) {
       return new Response('OK');
     }
   } catch (_) { /* kalau GH API error, biarkan lanjut (fail-open) */ }
+  LOG(`guard passed duration=${duration} url=${url.slice(0,40)}`);
 
   // === #1 PROBE m3u8: ambil resolusi asli buat estimasi AKURAT ===
   // Worker fetch playlist, cari #EXT-X-STREAM-INF:RESOLUTION=WxH (atau variant).
@@ -588,7 +594,9 @@ async function handleRecord(text, chatId, env) {
   // Trigger GitHub Actions
   const trig = await triggerGitHubActions(env, url, duration, chatId, filename, referer, profile);
   const orvId = trig.orvId;
+  LOG(`triggered orv=${orvId}`);
   const trigResp = await trig.resp; // fetch returns Promise -> await dulu
+  LOG(`trigResp status=${trigResp.status}`);
 
   if (trigResp.ok) {
     let msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
@@ -601,8 +609,10 @@ async function handleRecord(text, chatId, env) {
     if (probeRes) msg += `🖥 Sumber: ${probeRes}p${probeFpsHint ? ' @' + probeFpsHint + 'fps' : ''}\n`;
     msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
     await sendMessage(env.BOT_TOKEN, chatId, msg);
+    LOG(`sent success msg orv=${orvId}`);
   } else {
     const errText = await trigResp.text();
+    LOG(`GH not ok: ${errText.slice(0,200)}`);
     await sendMessage(env.BOT_TOKEN, chatId,
       `❌ Gagal trigger rekaman.\nError: ${escapeHtml(errText.slice(0, 500))}`
     );
