@@ -467,7 +467,21 @@ jobs:
           [ -z "$TAG" ] && exit 0
           echo "🧹 Encode gagal -> hapus release temp biar gak numpuk: $TAG"
           gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-          # (kalau cancelled: sengaja TIDAK dihapus, biar user bisa retry manual)
+          # (kalau cancelled: sengaja TIDAK dihapus di sini, biar user bisa retry manual)
+
+      # === #FIX: selalu bersihkan temp release, TERMASUK kalau cancelled ===
+      # Sebelumnya cancelled run gak kehapus (step di atas cuma failure/success),
+      # sehingga temp release numpuk jadi ratusan part. Step ini idempoten.
+      - name: Hapus release temp (selalu, incl. cancelled) — anti numpuk
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.inputs.outputs.release_tag }}"
+          [ -z "$TAG" ] && exit 0
+          echo "🧹 Pastikan release temp dibersihkan (always): $TAG"
+          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
 
       # === #3 AUTO-RETRY: kalau encode gagal, redispatch 1 level lebih cepat ===
       # Level: medium > faster > fast > veryfast(tetap) ; stop setelah veryfast.
