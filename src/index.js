@@ -386,9 +386,12 @@ function estEncodeSeconds(profileKey, recordSeconds, probeRes) {
 
 async function getProfile(env, chatId) {
   try {
-    const v = await env.ORVELLA_KV.get(`encprof:${chatId}`);
+    const v = await Promise.race([
+      env.ORVELLA_KV.get(`encprof:${chatId}`),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('kv timeout')), 3000))
+    ]);
     if (v && ENCODE_PROFILES[v]) return v;
-  } catch (_) {}
+  } catch (_) { /* KV lambat/error = fallback */ }
   return DEFAULT_PROFILE;
 }
 
