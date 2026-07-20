@@ -119,75 +119,94 @@ jobs:
             sleep 2
           done
 
-      - name: Auto-downgrade preset kalau estimasi > 5j50m
+      - name: Auto-downgrade preset (real-measure 60s sample)
         id: autodg
         run: |
-          # Faktor realtime x265 (relatif medium=1.0x), kalibrasi bench 2 vCPU GitHub runner.
-          # Semakin KECIL = makin lambat. Batas aman job = 360m (6 jam, hard limit GitHub).
-          # Sumber: bench riil (veryslow=0.5x) + ladder x265 standar.
-          declare -A RT=(
-            [ultrafast]=20 [superfast]=12 [veryfast]=6 [faster]=4 [fast]=3
-            [medium]=1.0 [slow]=0.7 [slower]=0.45 [veryslow]=0.25 [placebo]=0.1
-            # alias profil UI lama (jaga kompatibilitas)
-            [speed]=6 [balanced]=1.0 [quality]=0.7 [max]=0.25
-          )
-          # Ladder x265 lambat -> cepat (buat cascade downgrade)
-          LADDER=( placebo veryslow slower slow medium fast faster veryfast superfast ultrafast )
+          # --- STRATEGI: ukur kecepatan RIIL lewat sample 60s encode,
+          # bukan tabel statis (terbukti meleset buat 'slower').
+          # 1) Encode 60s pakai preset PILIHAN -> dapat fps riil.
+          # 2) Hitung realtime_x = fps_encode / fps_video_asli.
+          # 3) Cascade: pilih preset TERTINGGI (paling lambat) yg est <= 350m.
+          ORIG="${{ steps.dl.outputs.ORIG_FILE }}"
           PRESET="${{ steps.inputs.outputs.hevc_preset || 'medium' }}"
           CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '22' }}"
           DUR="${{ steps.inputs.outputs.duration }}"
           [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
           LIMIT_MIN=350
           OVERHEAD_MIN=15
-          # --- Auto-detect resolusi buat nyesuain faktor realtime ---
-          ORIG="${{ steps.dl.outputs.ORIG_FILE }}"
-          RES_FACTOR=1.0; RES_W=""; RES_H=""
-          if command -v ffprobe >/dev/null 2>&1 && [ -n "$ORIG" ] && [ -s "$ORIG" ]; then
-            W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=noprint_wrappers=1:nokey=1 "$ORIG" 2>/dev/null | head -1)
-            H=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=noprint_wrappers=1:nokey=1 "$ORIG" 2>/dev/null | head -1)
-            if [ -n "$W" ] && [ -n "$H" ] && [ "$W" -gt 0 ] 2>/dev/null; then
-              RES_FACTOR=$(awk "BEGIN{ v=(1280*720)/($W*$H); if(v<0.3) v=0.3; printf \"%.3f\", v }")
-              RES_W="$W"; RES_H="$H"
-              echo "📐 Resolusi terdeteksi: ${W}x${H} (faktor ${RES_FACTOR}x vs 720p60)"
-            else
-              echo "⚠️ ffprobe gak dapet resolusi, pakai faktor 720p60 (1.0x)"
-            fi
-          else
-            echo "ℹ️ ffprobe gak tersedia / file kosong, pakai faktor 720p60 (1.0x)"
+          FFMPEG_STATIC="${{ env.FFMPEG_STATIC }}"
+
+          # fps video asli (biar tahu realtime_x)
+          VFPS=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=noprint_wrappers=1:nokey=1 "$ORIG" 2>/dev/null | head -1)
+          VFPS_NUM=$(awk -F/ '{if(NF==2) printf "%.2f", $1/$2; else printf "%.2f", $1}' <<<"$VFPS" 2>/dev/null || echo 30)
+          [ -z "$VFPS_NUM" ] && VFPS_NUM=30
+          echo "📐 FPS video asli: $VFPS_NUM"
+
+          # --- Sample 60s encode pakai preset PILIHAN ---
+          echo "⏱ Sampling 60s encode dgn preset '$PRESET' (CRF $CRF_VAL)..."
+          SAMPLE_OUT="/tmp/orvella_sample.mkv"
+          # -progress pipe -> ambil 'fps=' terakhir
+          timeout 75 "$FFMPEG_STATIC" -hide_banner -y -ss 0 -i "$ORIG" -t 60 \
+            -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
+            -crf "$CRF_VAL" -preset "$PRESET" -tag:v hvc1 \
+            -an -progress pipe:1 "$SAMPLE_OUT" 2>/dev/null \
+            | awk -F= '/^fps=/{v=$2} END{ if(v!="") print v }' > /tmp/orvella_fps.txt
+          SAMPLE_FPS=$(cat /tmp/orvella_fps.txt 2>/dev/null | head -1)
+          rm -f "$SAMPLE_OUT" 2>/dev/null || true
+          if [ -z "$SAMPLE_FPS" ] || awk "BEGIN{exit !($SAMPLE_FPS<=0)}"; then
+            echo "⚠️ Sample gak dapet fps -> fallback tabel statis"
+            SAMPLE_FPS=""
           fi
-          # faktor preset: kalau gak dikenal (mis. "slower" lama), asumsi LAMBAT (0.3)
-          # biar auto-downgrade PASTI jalan, bukan kebetulan lewat.
-          PRT=${RT[$PRESET]:-0.3}
-          rt=$(awk "BEGIN{printf \"%.4f\", $PRT * $RES_FACTOR}")
-          est_min=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $rt) + $OVERHEAD_MIN}")
-          echo "🎚 Preset dipilih: $PRESET (CRF $CRF_VAL)"
-          echo "⏱ Estimasi encode: ${est_min}m (durasi=$((DUR/60))m, ${rt}x realtime)"
+          echo "🎞 FPS encode sample ($PRESET): ${SAMPLE_FPS:-?}"
+
+          # Faktor relatif antar preset (standar x265 ladder; medium=1.0)
+          declare -A RT=(
+            [ultrafast]=20 [superfast]=12 [veryfast]=6 [faster]=4 [fast]=3
+            [medium]=1.0 [slow]=0.7 [slower]=0.45 [veryslow]=0.25 [placebo]=0.1
+            [speed]=6 [balanced]=1.0 [quality]=0.7 [max]=0.25
+          )
+          LADDER=( placebo veryslow slower slow medium fast faster veryfast superfast ultrafast )
+
+          # realtime_x dasar: dari sample (atau fallback tabel)
+          if [ -n "$SAMPLE_FPS" ] && awk "BEGIN{exit !($SAMPLE_FPS>0)}"; then
+            BASE_RT=$(awk "BEGIN{printf \"%.4f\", $SAMPLE_FPS / $VFPS_NUM}")
+          else
+            # fallback: pakai tabel statis buat preset pilihan
+            PRT=${RT[$PRESET]:-0.3}
+            BASE_RT=$PRT
+            echo "↩️ Fallback realtime_x=$BASE_RT (tabel)"
+          fi
+          echo "🔁 realtime_x dasar ($PRESET): ${BASE_RT}x"
+
+          # Estimasi per preset: est_min = (DUR/60 / realtime_x_preset) + overhead
+          # realtime_x_preset = BASE_RT * (RT[PRESET] / RT[chosen])
+          CHOSEN_RT=${RT[$PRESET]:-0.3}
+
           FINAL="$PRESET"
           FINAL_CRF="$CRF_VAL"
-          if [ "$est_min" -gt "$LIMIT_MIN" ]; then
-            echo "⚠️ Estimasi ${est_min}m > ${LIMIT_MIN}m -> cari preset lebih cepat (tertinggi yg muat)..."
-            found=0
-            for p in "${LADDER[@]}"; do
-              if [ "$p" = "$PRESET" ]; then found=1; continue; fi
-              if [ "$found" = "1" ]; then
-                prt=${RT[$p]:-1.0}
-                nrt=$(awk "BEGIN{printf \"%.4f\", $prt * $RES_FACTOR}")
-                nest=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $nrt) + $OVERHEAD_MIN}")
-                if [ "$nest" -le "$LIMIT_MIN" ]; then
-                  FINAL="$p"; FINAL_CRF="$CRF_VAL"; echo "✅ Turun ke: $FINAL (CRF $FINAL_CRF, estimasi ${nest}m)"; break
-                fi
+          FINAL_RT="$BASE_RT"
+          best_est=9999
+          for p in "${LADDER[@]}"; do
+            prt=${RT[$p]:-1.0}
+            # realtime_x untuk preset p
+            rtp=$(awk "BEGIN{printf \"%.4f\", $BASE_RT * ($prt / $CHOSEN_RT)}")
+            est=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $rtp) + $OVERHEAD_MIN}")
+            echo "   • $p: ${rtp}x realtime -> est ${est}m"
+            # pilih preset TERTINGGI (paling lambat = realtime_x terkecil) yg muat
+            if [ "$est" -le "$LIMIT_MIN" ]; then
+              if awk "BEGIN{exit !($rtp < $FINAL_RT)}"; then
+                FINAL="$p"; FINAL_CRF="$CRF_VAL"; FINAL_RT="$rtp"
               fi
-            done
-            if [ "$FINAL" = "$PRESET" ]; then
-              echo "⚠️ Sudah di preset tercepat ($FINAL), gak bisa turun lagi (risiko timeout)."
             fi
+          done
+
+          if [ "$FINAL" = "$PRESET" ]; then
+            echo "✅ Estimasi aman, pakai preset asli: $FINAL (${FINAL_RT}x, est di bawah ${LIMIT_MIN}m)"
           else
-            echo "✅ Estimasi aman, pakai preset asli: $FINAL"
+            echo "🔻 Turun ke: $FINAL (CRF $FINAL_CRF, ${FINAL_RT}x realtime) biar muat 6 jam"
           fi
           echo "FINAL_PRESET=$FINAL" >> $GITHUB_OUTPUT
           echo "FINAL_CRF=$FINAL_CRF" >> $GITHUB_OUTPUT
-          echo "RES_W=$RES_W" >> $GITHUB_OUTPUT
-          echo "RES_H=$RES_H" >> $GITHUB_OUTPUT
 
       - name: Encode to HEVC 10-bit (dari original, full 6 jam)
         id: hevc
@@ -219,7 +238,7 @@ jobs:
           SRC_DUR_INT="${{ steps.inputs.outputs.duration }}"
           [ -z "$SRC_DUR_INT" ] || [ "$SRC_DUR_INT" -le 0 ] 2>/dev/null && SRC_DUR_INT=60
 
-          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state python3 scripts/progress.py start || true
+          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py start || true
           LAST_PCT=-1
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
@@ -234,7 +253,7 @@ jobs:
               if [ "$pct" != "$LAST_PCT" ]; then
                 LAST_PCT=$pct
                 echo "🔄 HEVC encode ${pct}%"
-                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state python3 scripts/progress.py progress "$pct" || true
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py progress "$pct" || true
               fi
             fi
           done
@@ -296,6 +315,18 @@ jobs:
           [ -z "$TAG" ] && exit 0
           echo "🧹 Menghapus release temp: $TAG"
           gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+
+      - name: Hapus GitHub Release sementara kalau GAGAL (anti numpuk)
+        if: failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.inputs.outputs.release_tag }}"
+          [ -z "$TAG" ] && exit 0
+          echo "🧹 Encode gagal -> hapus release temp biar gak numpuk: $TAG"
+          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          # (kalau cancelled: sengaja TIDAK dihapus, biar user bisa retry manual)
 
       - name: Bersihkan disk runner
         if: always()

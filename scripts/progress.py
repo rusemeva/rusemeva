@@ -98,27 +98,39 @@ def write_state(start_epoch, pct, epoch):
 
 def estimate_eta(pct, now, start_epoch):
     """Hitung sisa waktu + prediksi selesai dari progress riil.
-    Return (eta_sisa_str, selesai_clock_str) atau (None, None) kalau belum cukup data.
+    Return (eta_sisa_str, selesai_clock_str, realtime_x) atau (None, None, None)
+    kalau belum cukup data.
+    realtime_x = berapa kali lipat encode vs durasi asli (mis. 2.1 = 2.1x realtime).
     """
     if pct <= 0:
-        return None, None
+        return None, None, None
     # butuh minimal 2 titik (pct >= STEP_PCT) supaya garis lurus stabil
     if pct < STEP_PCT:
-        return None, None
+        return None, None, None
     if start_epoch <= 0:
-        return None, None
+        return None, None, None
     elapsed = now - start_epoch
     if elapsed <= 0:
-        return None, None
+        return None, None, None
     rate_pct_per_sec = pct / elapsed          # % per detik
     if rate_pct_per_sec <= 0:
-        return None, None
+        return None, None, None
     sisa_pct = 100 - pct
     eta_sisa_secs = sisa_pct / rate_pct_per_sec
     # sanity: tolak estimasi gak wajar (<1m atau >12j)
     if eta_sisa_secs < 60 or eta_sisa_secs > 12 * 3600:
-        return None, None
-    return fmt_dur(eta_sisa_secs), fmt_clock(eta_sisa_secs)
+        return None, None, None
+    # realtime_x: dari env SRC_DUR_SEC (durasi asli video)
+    realtime_x = None
+    try:
+        dur_sec = int(os.environ.get("SRC_DUR_SEC", "0") or "0")
+        if dur_sec > 0:
+            # detik encode utk (pct/100 * durasi_asli) detik video
+            encoded_secs = (pct / 100.0) * dur_sec
+            realtime_x = encoded_secs / elapsed
+    except Exception:
+        realtime_x = None
+    return fmt_dur(eta_sisa_secs), fmt_clock(eta_sisa_secs), realtime_x
 
 
 if len(sys.argv) < 2:
@@ -151,10 +163,12 @@ elif mode == "progress":
     if send and pct < MILESTONE and last_pct != -1 and (now - last_epoch) < MIN_INTERVAL:
         send = False
     if send:
-        eta_sisa, selesai = estimate_eta(pct, now, start_epoch)
+        eta_sisa, selesai, rt_x = estimate_eta(pct, now, start_epoch)
         eta_line = ""
         if eta_sisa and selesai:
             eta_line = "\n⏳ Sisa ~{} · selesai ~{}".format(eta_sisa, selesai)
+            if rt_x and rt_x > 0:
+                eta_line += " · {:.1f}x rt".format(rt_x)
         text = "{} <b>{}</b>\n\n{} {}%{}\n📦 <code>{}</code>".format(
             ICON, PHASE_LABEL, build_bar(pct), pct, eta_line, FILENAME)
         edit(text)
