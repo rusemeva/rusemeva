@@ -247,7 +247,7 @@ async function setWebhook(env, request) {
     return new Response('forbidden', { status: 403 });
   }
   const origin = url.origin; // https://rusemeva.rusemeva.workers.dev
-  const whUrl = `${origin}/`;
+  const whUrl = `${origin}`; // TANPA trailing slash (Telegram webhook standard)
   try {
     const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/setWebhook`, {
       method: 'POST',
