@@ -588,8 +588,9 @@ async function handleRecord(text, chatId, env) {
   // Trigger GitHub Actions
   const trig = await triggerGitHubActions(env, url, duration, chatId, filename, referer, profile);
   const orvId = trig.orvId;
+  const trigResp = await trig.resp; // fetch returns Promise -> await dulu
 
-  if (trig.resp.ok) {
+  if (trigResp.ok) {
     let msg = '✅ <b>Rekaman dimulai!</b>\n\n' +
       `🆔 ID: <code>${orvId}</code>\n` +
       `🔗 URL: <code>${escapeHtml(url)}</code>\n` +
@@ -601,7 +602,7 @@ async function handleRecord(text, chatId, env) {
     msg += `${estLine}\n\n☁️ Hasil di-upload ke GitHub Release setelah selesai, lalu dikirim ke Telegram.\n\nSimpan ID ini untuk /cancel <id> kalau mau membatalkan.`;
     await sendMessage(env.BOT_TOKEN, chatId, msg);
   } else {
-    const errText = await trig.resp.text();
+    const errText = await trigResp.text();
     await sendMessage(env.BOT_TOKEN, chatId,
       `❌ Gagal trigger rekaman.\nError: ${escapeHtml(errText.slice(0, 500))}`
     );
