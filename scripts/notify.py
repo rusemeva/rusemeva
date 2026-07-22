@@ -73,6 +73,9 @@ hevc_res = os.environ.get("HEVC_RES", "") or resolution
 hevc_codec = os.environ.get("HEVC_VCODEC", "") or "hevc"
 hevc_br = os.environ.get("HEVC_VBITRATE", "") or "?"
 hevc_dur = os.environ.get("HEVC_DUR", "") or real_duration
+# HEVC thumbnail (diperlukan agar sendVideo tidak crash & muncul preview)
+hevc_thumb_file = os.environ.get("HEVC_THUMB_FILE", "")
+has_hevc_thumb = os.environ.get("HAS_HEVC_THUMB", "0") == "1"
 
 run_url = f"{server_url}/{repo}/actions/runs/{run_id}"
 release_url = f"https://github.com/{repo}/releases/tag/{tag}" if tag else ""
