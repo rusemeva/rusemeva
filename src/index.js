@@ -36,6 +36,14 @@ const ENCODE_PROFILES = {
     quality: '🟢🟢🟢 transparan',
     note: 'Kualitas tinggi. Tetap cegah file membengkak, tapi jaga bitrate minimal ~1.2 Mbps.',
   },
+  live: {
+    key: 'live',
+    label: '📺 Siaran / Live TV',
+    preset: 'veryfast',
+    crf: 24,
+    quality: '🟢 bagus (TV)',
+    note: 'Khusus siaran TV/live: jaga tengah frame, hemat di logo/ticker, denoise ringan. Target ~1.3 Mbps.',
+  },
 };
 const DEFAULT_PROFILE = 'balanced';
 
@@ -344,7 +352,7 @@ async function handleSettingSelect(text, chatId, env) {
   const key = parts[1]?.toLowerCase();
   if (!key || !ENCODE_PROFILES[key]) {
     await sendMessage(env.BOT_TOKEN, chatId,
-      '❌ Profil tidak dikenal.\nGunakan: /setting speed | balanced | quality | max\n' +
+      '❌ Profil tidak dikenal.\nGunakan: /setting speed | balanced | quality | max | live\n' +
       'Optional durasi: /setting quality 120m (untuk estimasi waktu encode).'
     );
     return;

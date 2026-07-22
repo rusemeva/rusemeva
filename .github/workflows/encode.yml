@@ -35,6 +35,7 @@ jobs:
           echo "release_tag=${{ github.event.client_payload.release_tag }}" >> $GITHUB_OUTPUT
           echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
           echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
+          echo "encode_profile=${{ github.event.client_payload.encode_profile || '' }}" >> $GITHUB_OUTPUT
           echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
 
       # === Link run_id -> orv_id ke KV (biar /status bisa baca % encode) ===
@@ -426,7 +427,81 @@ jobs:
           fi
 
           # x265 adaptive quant: alokasi bit lebih pintar per-block (dalam-frame scene-aware)
-          X265_PARAMS="aq-mode=3:aq-strength=1.0:rd=3:psy-rd=1.5:psy-rdoq=1.0:rc-lookahead=40:scenecut=40"
+
+          # === LIVE-FRIENDLY MODE (siaran TV) ===
+          # Aktif jika: profil /setting live  ATAU auto-detect chrome statis (logo/ticker).
+          # Efek: AQ lebih agresif di detail, denoise ringan, jaga tengah, hemat area statis.
+          ENCODE_PROFILE="${{ steps.inputs.outputs.encode_profile || '' }}"
+          LIVE_MODE=0
+          LIVE_REASON=""
+          if [ "$ENCODE_PROFILE" = "live" ]; then
+            LIVE_MODE=1
+            LIVE_REASON="profil /setting live"
+          else
+            # Auto-detect: bandingkan stabilitas sudut vs tengah di 5 timestamp
+            # Kalau sudut jauh lebih stabil → kemungkinan logo/ticker TV.
+            if [ "${SRC_DUR_INT:-0}" -ge 120 ] 2>/dev/null; then
+              echo "📺 Live-detect: cek chrome statis (logo/ticker)..."
+              CORNER_DIFF=0
+              CENTER_DIFF=0
+              N_PAIR=0
+              PREV_C=""
+              PREV_M=""
+              for frac in 15 35 55 75 90; do
+                SS=$(( SRC_DUR_INT * frac / 100 ))
+                MAX_SS=$(( SRC_DUR_INT - 2 ))
+                [ "$SS" -gt "$MAX_SS" ] && SS=$MAX_SS
+                FC="/tmp/orv_live_c_${frac}.png"
+                FM="/tmp/orv_live_m_${frac}.png"
+                # sudut kiri-atas 12%
+                "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -i "$FILE" -vframes 1 \
+                  -vf "crop=iw*0.12:ih*0.12:0:0,scale=64:64,format=gray" "$FC" >/dev/null 2>&1 || true
+                # tengah 30%
+                "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -i "$FILE" -vframes 1 \
+                  -vf "crop=iw*0.30:ih*0.30:(iw-ow)/2:(ih-oh)/2,scale=64:64,format=gray" "$FM" >/dev/null 2>&1 || true
+                if [ -n "$PREV_C" ] && [ -s "$FC" ] && [ -s "$PREV_C" ]; then
+                  # mean abs diff via ffmpeg psnr (lower=more similar/static)
+                  DC=$("$FFMPEG_STATIC" -hide_banner -i "$PREV_C" -i "$FC" -filter_complex "psnr" -f null - 2>&1 | sed -n 's/.*mse_avg:\([0-9.]*\).*/\1/p' | tail -1)
+                  DM=$("$FFMPEG_STATIC" -hide_banner -i "$PREV_M" -i "$FM" -filter_complex "psnr" -f null - 2>&1 | sed -n 's/.*mse_avg:\([0-9.]*\).*/\1/p' | tail -1)
+                  DC=${DC%.*}; DM=${DM%.*}
+                  [ -z "$DC" ] && DC=0
+                  [ -z "$DM" ] && DM=0
+                  CORNER_DIFF=$(( CORNER_DIFF + DC ))
+                  CENTER_DIFF=$(( CENTER_DIFF + DM ))
+                  N_PAIR=$(( N_PAIR + 1 ))
+                  echo "   • t=${SS}s corner_mse~$DC center_mse~$DM"
+                fi
+                PREV_C=$FC; PREV_M=$FM
+              done
+              rm -f /tmp/orv_live_c_*.png /tmp/orv_live_m_*.png 2>/dev/null || true
+              if [ "$N_PAIR" -gt 0 ]; then
+                AVG_C=$(( CORNER_DIFF / N_PAIR ))
+                AVG_M=$(( CENTER_DIFF / N_PAIR ))
+                echo "📺 Live-detect avg: corner_mse=$AVG_C center_mse=$AVG_M"
+                # sudut statis (mse kecil) + tengah lebih dinamis → siaran TV
+                if [ "$AVG_C" -le 25 ] && [ "$AVG_M" -ge $(( AVG_C * 3 + 5 )) ]; then
+                  LIVE_MODE=1
+                  LIVE_REASON="auto-detect chrome TV (logo/ticker)"
+                fi
+              fi
+            fi
+          fi
+
+          VF_LIVE=""
+          if [ "$LIVE_MODE" = "1" ]; then
+            echo "📺 LIVE MODE ON ($LIVE_REASON)"
+            # Denoise sangat ringan (siaran sering noisy), jaga detail wajah
+            VF_LIVE="hqdn3d=0.8:0.6:2:2"
+            # AQ lebih kuat + lookahead lebih panjang + mild deblock (ticker/logo lebih rapi)
+            X265_PARAMS="aq-mode=3:aq-strength=1.25:qcomp=0.72:rd=3:psy-rd=1.8:psy-rdoq=1.0:rc-lookahead=60:scenecut=40:deblock=-1,-1:sao=1:strong-intra-smoothing=1:bframes=6"
+            CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+              "📺 <b>Live-friendly ON</b> — ${LIVE_REASON}.\\nJaga tengah frame, hemat logo/ticker, denoise ringan. Target tetap ~1.3 Mbps." || true
+          else
+            echo "📺 Live mode OFF (konten general)"
+            X265_PARAMS="aq-mode=3:aq-strength=1.0:rd=3:psy-rd=1.5:psy-rdoq=1.0:rc-lookahead=40:scenecut=40"
+          fi
+
+
 
           CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py start || true
           LAST_PCT=-1
@@ -434,7 +509,13 @@ jobs:
           # FIX PROGRESS 0%: -progress pipe:1 tulis ke stdout.
           # Pakai '3>&1 1>>...' supaya progress ke fd 3 (yg di-pipe ke while),
           # stderr+stdout utama ke log. Tanpa ini, progress diambil log, while kosong.
+          # Live denoise filter (kosong kalau bukan live)
+          LIVE_VF_ARGS=()
+          if [ -n "${VF_LIVE:-}" ]; then
+            LIVE_VF_ARGS=(-vf "$VF_LIVE")
+          fi
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
+            "${LIVE_VF_ARGS[@]}" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
             -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS}" -tag:v hvc1 \
             -c:a copy -progress pipe:3 "$HEVC_FILE" \
@@ -717,6 +798,7 @@ jobs:
             -f "client_payload[human_duration]=$HUMAN_DUR" \
             -f "client_payload[hevc_preset]=$NEXT_PRESET" \
             -f "client_payload[hevc_crf]=$NEXT_CRF" \
+            -f "client_payload[encode_profile]=${{ steps.inputs.outputs.encode_profile || '' }}" \
             -f "client_payload[orv_id]=$ORV_ID" \
             -f "client_payload[auto_retry]=1" || true
           echo "retried=1" >> $GITHUB_OUTPUT
