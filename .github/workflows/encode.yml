@@ -34,7 +34,7 @@ jobs:
           echo "duration=${{ github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
           echo "release_tag=${{ github.event.client_payload.release_tag }}" >> $GITHUB_OUTPUT
           echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
-          echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
+          echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '26' }}" >> $GITHUB_OUTPUT
           echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
 
       # === Link run_id -> orv_id ke KV (biar /status bisa baca % encode) ===
@@ -341,7 +341,7 @@ jobs:
           HEVC_FILE="${FILE%.mp4}-h265-10bit.mp4"
           FFMPEG_STATIC="${{ env.FFMPEG_STATIC }}"
           HEVC_PRESET="${{ steps.autodg.outputs.FINAL_PRESET || 'veryfast' }}"
-          HEVC_CRF="${{ steps.autodg.outputs.FINAL_CRF || '24' }}"
+          HEVC_CRF="${{ steps.autodg.outputs.FINAL_CRF || '26' }}"
           CHOSEN="${{ steps.inputs.outputs.hevc_preset || 'balanced' }}"
           if [ "$CHOSEN" != "$HEVC_PRESET" ]; then
             MSG="🔻 <b>Auto-downgrade!</b> Preset <code>$CHOSEN</code> estimasi &gt;5j50m, otomatis turun ke <code>$HEVC_PRESET</code> (CRF $HEVC_CRF) biar muat 6 jam."
@@ -573,7 +573,7 @@ jobs:
           FILENAME: ${{ steps.inputs.outputs.filename || '' }}
           # Pakai preset FINAL (hasil autodg), bukan preset input mentah
           CUR_PRESET: ${{ steps.autodg.outputs.FINAL_PRESET || steps.inputs.outputs.hevc_preset || 'veryfast' }}
-          CUR_CRF: ${{ steps.autodg.outputs.FINAL_CRF || steps.inputs.outputs.hevc_crf || '24' }}
+          CUR_CRF: ${{ steps.autodg.outputs.FINAL_CRF || steps.inputs.outputs.hevc_crf || '26' }}
           RELEASE_TAG: ${{ steps.inputs.outputs.release_tag || '' }}
           DURATION: ${{ steps.inputs.outputs.duration || '' }}
           HUMAN_DUR: ${{ steps.inputs.outputs.human_duration || '' }}
