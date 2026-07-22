@@ -354,6 +354,79 @@ jobs:
 
           SRC_DUR_INT="${{ steps.inputs.outputs.duration }}"
           [ -z "$SRC_DUR_INT" ] || [ "$SRC_DUR_INT" -le 0 ] 2>/dev/null && SRC_DUR_INT=60
+          # Prefer durasi nyata dari file (lebih akurat dari payload)
+          REAL_SRC=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$FILE" 2>/dev/null | head -1)
+          REAL_SRC_INT=${REAL_SRC%.*}
+          if [ -n "$REAL_SRC_INT" ] && [ "$REAL_SRC_INT" -gt 0 ] 2>/dev/null; then
+            SRC_DUR_INT=$REAL_SRC_INT
+          fi
+
+          # === SCENE-AWARE CRF ===
+          # Probe 5 cuplikan @8s: encode mini ultrafast di CRF basis, ukur bytes/s.
+          # Konten ramai/gelap (bytes/s tinggi) → CRF turun (lebih bagus).
+          # Konten sepi/talking-head (bytes/s rendah) → CRF naik (lebih hemat).
+          # Clamp final 22..28 biar tetap di sweet-spot ~1.2–1.4 Mbps @720p.
+          BASE_CRF=$HEVC_CRF
+          SCENE_DELTA=0
+          if [ "$SRC_DUR_INT" -ge 60 ] 2>/dev/null; then
+            echo "🧠 Scene-aware probe (5x8s)..."
+            SUM_BPS=0
+            N_OK=0
+            for frac in 10 30 50 70 90; do
+              SS=$(( SRC_DUR_INT * frac / 100 ))
+              # jangan mepet EOF
+              MAX_SS=$(( SRC_DUR_INT - 10 ))
+              [ "$SS" -gt "$MAX_SS" ] && SS=$MAX_SS
+              [ "$SS" -lt 0 ] && SS=0
+              SAMPLE="/tmp/orvella_scene_${frac}.mp4"
+              "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -t 8 -i "$FILE" \
+                -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
+                -crf ${BASE_CRF} -preset ultrafast -an "$SAMPLE" >/tmp/orvella_scene_probe.log 2>&1 || true
+              if [ -s "$SAMPLE" ]; then
+                BY=$(stat -c%s "$SAMPLE" 2>/dev/null || wc -c < "$SAMPLE")
+                # bytes per second of sample
+                BPS=$(( BY / 8 ))
+                SUM_BPS=$(( SUM_BPS + BPS ))
+                N_OK=$(( N_OK + 1 ))
+                echo "   • t=${SS}s sample=${BY}B (~${BPS} B/s)"
+              fi
+              rm -f "$SAMPLE" 2>/dev/null || true
+            done
+            if [ "$N_OK" -gt 0 ]; then
+              AVG_BPS=$(( SUM_BPS / N_OK ))
+              echo "🧠 Scene avg complexity: ${AVG_BPS} B/s (n=$N_OK) base_crf=$BASE_CRF"
+              # Kalibrasi kasar 720p@CRF24 ultrafast sample:
+              # sepi < 40k B/s, normal 40–90k, ramai > 90k
+              if [ "$AVG_BPS" -gt 90000 ]; then
+                SCENE_DELTA=-2
+                SCENE_LABEL="ramai/kompleks"
+              elif [ "$AVG_BPS" -gt 60000 ]; then
+                SCENE_DELTA=-1
+                SCENE_LABEL="agak ramai"
+              elif [ "$AVG_BPS" -lt 35000 ]; then
+                SCENE_DELTA=1
+                SCENE_LABEL="sepi/talking-head"
+              else
+                SCENE_DELTA=0
+                SCENE_LABEL="normal"
+              fi
+              HEVC_CRF=$(( BASE_CRF + SCENE_DELTA ))
+              [ "$HEVC_CRF" -lt 22 ] && HEVC_CRF=22
+              [ "$HEVC_CRF" -gt 28 ] && HEVC_CRF=28
+              echo "🧠 Scene-aware: ${SCENE_LABEL} → CRF ${BASE_CRF} + (${SCENE_DELTA}) = ${HEVC_CRF}"
+              if [ "$HEVC_CRF" != "$BASE_CRF" ]; then
+                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+                  "🧠 <b>Scene-aware:</b> konten <code>${SCENE_LABEL}</code> → CRF <code>${BASE_CRF}</code> → <code>${HEVC_CRF}</code> (jaga ~1.3 Mbps, anti-buram di bagian penting)." || true
+              fi
+            else
+              echo "⚠️ Scene probe gagal — pakai CRF basis $BASE_CRF"
+            fi
+          else
+            echo "ℹ️ Video pendek (<60s) — skip scene-aware"
+          fi
+
+          # x265 adaptive quant: alokasi bit lebih pintar per-block (dalam-frame scene-aware)
+          X265_PARAMS="aq-mode=3:aq-strength=1.0:rd=3:psy-rd=1.5:psy-rdoq=1.0:rc-lookahead=40:scenecut=40"
 
           CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py start || true
           LAST_PCT=-1
@@ -363,7 +436,7 @@ jobs:
           # stderr+stdout utama ke log. Tanpa ini, progress diambil log, while kosong.
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-            -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
+            -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS}" -tag:v hvc1 \
             -c:a copy -progress pipe:3 "$HEVC_FILE" \
             3> >(while IFS='=' read -r k v; do
               if [ "$k" = "out_time_ms" ]; then
@@ -420,7 +493,7 @@ jobs:
               LAST_PCT=-1
               "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
                 -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-                -crf ${CUR_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
+                -crf ${CUR_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
                 -c:a copy -progress pipe:3 "$HEVC_FILE" \
                 3> >(while IFS='=' read -r k v; do
                   if [ "$k" = "out_time_ms" ]; then
@@ -462,7 +535,7 @@ jobs:
                 LAST_PCT=-1
                 "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
                   -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-                  -crf ${CUR_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
+                  -crf ${CUR_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
                   -c:a copy -progress pipe:3 "$HEVC_FILE" \
                   3> >(while IFS='=' read -r k v; do
                     if [ "$k" = "out_time_ms" ]; then
