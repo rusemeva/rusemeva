@@ -520,7 +520,7 @@ jobs:
           TAG="orvella-$(date +%s)"
           TITLE="Orvella Vault — $(date '+%Y-%m-%d %H:%M:%S') WIB (${{ steps.inputs.outputs.duration_label }})"
 
-          # --- Extract URL segmen .ts dari playlist (bukan .m3u8) ---
+          # --- Extract SEMUA URL segmen .ts dari playlist (bukan cuma 1) ---
           M3U8="${{ steps.inputs.outputs.m3u8_url }}"
           REF="${{ steps.inputs.outputs.referer }}"
           resolve_url() {
@@ -542,19 +542,31 @@ jobs:
             fi
           }
           PL=$(fetch_h "$M3U8")
-          VAR=$(echo "$PL" | grep -E '\.m3u8' | head -1)
+          # Kalau master playlist, ikut variant .m3u8 pertama (biasanya quality yang dipakai)
+          VAR=$(echo "$PL" | grep -E '\.m3u8' | head -1 | tr -d '\r')
+          MEDIA_M3U8="$M3U8"
           if [ -n "$VAR" ] && [ "$VAR" != "$M3U8" ]; then
-            PL=$(fetch_h "$(resolve_url "$M3U8" "$VAR")")
+            MEDIA_M3U8="$(resolve_url "$M3U8" "$VAR")"
+            PL=$(fetch_h "$MEDIA_M3U8")
           fi
-          TSLINE=$(echo "$PL" | grep -E '\.ts' | head -1)
-          if [ -n "$TSLINE" ]; then
-            TS_URL="$(resolve_url "$M3U8" "$TSLINE")"
-          else
-            TS_URL="$M3U8"
+          # Kumpulkan semua baris .ts (absolute URL)
+          TS_LIST_FILE=$(mktemp)
+          echo "$PL" | tr -d '\r' | grep -E '\.ts($|\?)' | while read -r line; do
+            [ -z "$line" ] && continue
+            case "$line" in \#*) continue ;; esac
+            resolve_url "$MEDIA_M3U8" "$line"
+          done > "$TS_LIST_FILE"
+          TS_COUNT=$(wc -l < "$TS_LIST_FILE" | tr -d ' ')
+          FIRST_TS=$(head -1 "$TS_LIST_FILE" 2>/dev/null || true)
+          if [ -z "$FIRST_TS" ]; then
+            FIRST_TS="$M3U8"
+            TS_COUNT=0
           fi
-          echo "TS_URL=$TS_URL" >> $GITHUB_ENV
+          echo "TS_URL=$FIRST_TS" >> $GITHUB_ENV
+          echo "TS_COUNT=$TS_COUNT" >> $GITHUB_ENV
+          echo "Vault segments: $TS_COUNT .ts"
 
-          # .txt = file kecil berisi metadata + URL sumber (.ts) — bukan video
+          # .txt = metadata + daftar SEMUA segmen .ts (boleh panjang; ratusan-ribuan baris OK)
           TXT="${FILE%.mp4}.txt"
           {
             echo "# Orvella Vault — record update"
@@ -564,21 +576,32 @@ jobs:
             echo "resolusi: ${RESOLUTION}"
             echo "codec: ${VCODEC}"
             echo "bitrate: ${VBITRATE}"
-            echo "source_url: $TS_URL"
+            echo "playlist_url: ${M3U8}"
+            echo "media_playlist: ${MEDIA_M3U8}"
+            echo "segment_count: ${TS_COUNT}"
+            echo "source_url: ${FIRST_TS}"
             echo "referer: ${{ steps.inputs.outputs.referer }}"
             echo "status: sent-to-telegram"
             echo "recorded_at: $(date '+%Y-%m-%dT%H:%M:%S %z')"
+            echo ""
+            echo "# segments (.ts) — full list"
+            if [ "$TS_COUNT" -gt 0 ]; then
+              cat "$TS_LIST_FILE"
+            else
+              echo "# (no .ts lines found in playlist; kept playlist_url above)"
+            fi
           } > "$TXT"
+          rm -f "$TS_LIST_FILE" 2>/dev/null || true
 
-          NOTES="Orvella Vault — record update (lightweight log). Metadata + URL sumber disimpan, video dikirim ke Telegram (tidak disimpan di GitHub)."
+          NOTES="Orvella Vault — record update. Metadata + full daftar segmen .ts. Video dikirim ke Telegram (tidak disimpan di GitHub)."
 
-          # Release cuma berisi .txt (kecil, persist sebagai update log)
+          # Release cuma berisi .txt (boleh besar kalau segmen banyak; tetap teks, bukan video)
           gh release create "$TAG" --repo "${{ github.repository }}" \
             --title "${TITLE}" --notes "${NOTES}" \
             "$TXT" 2>/dev/null || \
           gh release create "$TAG" --repo "${{ github.repository }}" \
             --title "${TITLE}" --notes "${NOTES}" "$TXT"
-          echo "✅ Created release $TAG (asset: $(ls -lh "$TXT" | awk '{print $5}') .txt)"
+          echo "Created release $TAG (asset: $(ls -lh "$TXT" | awk '{print $5}') .txt, segments=$TS_COUNT)"
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "TXT_FILE=$TXT" >> $GITHUB_ENV
 
