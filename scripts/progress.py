@@ -6,12 +6,12 @@ API = "{}/bot{}".format(
     os.environ.get("BOT_TOKEN", ""),
 )
 CHAT = os.environ.get("CHAT_ID", "")
-MSG_FILE = os.environ.get("PROGRESS_MSG_FILE", "/tmp/orvella_progress_msg_id")
+MSG_FILE = os.environ.get("PROGRESS_MSG_FILE", "/tmp/rusemeva_progress_msg_id")
 FILENAME = os.environ.get("FILENAME", "")
 PHASE_LABEL = os.environ.get("PHASE_LABEL", "Encoding HEVC 10-bit")
 # State file menyimpan: start_epoch,last_pct,last_epoch
 # (progress.py dijalankan sebagai proses baru tiap tick oleh encode.yml)
-STATE_FILE = os.environ.get("PROGRESS_STATE_FILE", "/tmp/orvella_progress_state")
+STATE_FILE = os.environ.get("PROGRESS_STATE_FILE", "/tmp/rusemeva_progress_state")
 
 # --- Konstanta throttle ---
 STEP_PCT = 5        # kirim update tiap naik 5% (-> 20 update maksimal per video)

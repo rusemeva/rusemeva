@@ -1,4 +1,4 @@
-name: orvella-encode
+name: rusemeva-encode
 
 # Workflow TERPISAH untuk encode HEVC.
 # Dipicu oleh record.yml (setelah rekam + kirim original ke Telegram) lewat
@@ -39,7 +39,7 @@ jobs:
           echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
 
       # === Link run_id -> orv_id ke KV (biar /status bisa baca % encode) ===
-      - name: Link run ke ORV-ID (KV)
+      - name: Link run ke RSM-ID (KV)
         if: always()
         continue-on-error: true
         env:
@@ -89,7 +89,7 @@ jobs:
           TAG="${{ steps.inputs.outputs.release_tag }}"
           RAW="${{ steps.inputs.outputs.filename }}"
           echo "📥 Download original dari release temp: $TAG / $RAW"
-          mkdir -p /tmp/orvella_dl
+          mkdir -p /tmp/rusemeva_dl
           # Download SEMUA asset via gh api REST (lebih reliable dr 'gh release download'
           # yang bisa gagal silent di gh 2.x). Loop tiap asset -> stream octet-stream.
           API_URL="repos/${{ github.repository }}/releases/tags/$TAG"
@@ -103,25 +103,25 @@ jobs:
             fname=$(gh api "repos/${{ github.repository }}/releases/assets/$aid" --jq '.name')
             echo "  ⬇️  $fname"
             gh api "repos/${{ github.repository }}/releases/assets/$aid" \
-              -H "Accept: application/octet-stream" > "/tmp/orvella_dl/$fname"
-            echo "     -> $(stat -c%s "/tmp/orvella_dl/$fname" 2>/dev/null || echo 0) bytes"
+              -H "Accept: application/octet-stream" > "/tmp/rusemeva_dl/$fname"
+            echo "     -> $(stat -c%s "/tmp/rusemeva_dl/$fname" 2>/dev/null || echo 0) bytes"
           done
           echo "✅ Download semua asset release temp"
           echo "📂 Isi download:"
-          ls -lh /tmp/orvella_dl
+          ls -lh /tmp/rusemeva_dl
 
           # Kalau terpecah jadi segment (part-*), re-assemble jadi file utuh.
           # Karena byte-split, cukup `cat` balik dalam urutan ter-sort ->
           # hasil BIT-IDENTIK dgn original (tidak perlu ffmpeg concat).
-          if ls /tmp/orvella_dl/part-* >/dev/null 2>&1; then
+          if ls /tmp/rusemeva_dl/part-* >/dev/null 2>&1; then
             echo "🧩 Segment terdeteksi, re-assemble via cat (urutan sort)..."
-            cat $(ls /tmp/orvella_dl/part-* | sort) > "/tmp/orvella_dl/$RAW"
-            echo "✅ Re-assembled: $(ls -lh "/tmp/orvella_dl/$RAW" | awk '{print $5}')"
+            cat $(ls /tmp/rusemeva_dl/part-* | sort) > "/tmp/rusemeva_dl/$RAW"
+            echo "✅ Re-assembled: $(ls -lh "/tmp/rusemeva_dl/$RAW" | awk '{print $5}')"
           fi
 
-          if [ -s "/tmp/orvella_dl/$RAW" ]; then
-            echo "ORIG_FILE=/tmp/orvella_dl/$RAW" >> $GITHUB_OUTPUT
-            echo "✅ Original siap: $(ls -lh /tmp/orvella_dl/$RAW | awk '{print $5}')"
+          if [ -s "/tmp/rusemeva_dl/$RAW" ]; then
+            echo "ORIG_FILE=/tmp/rusemeva_dl/$RAW" >> $GITHUB_OUTPUT
+            echo "✅ Original siap: $(ls -lh /tmp/rusemeva_dl/$RAW | awk '{print $5}')"
           else
             echo "❌ Original gagal didownload"
             exit 1
@@ -177,14 +177,14 @@ jobs:
 
           # --- Sample 60s encode pakai preset PILIHAN ---
           echo "⏱ Sampling 60s encode dgn preset '$PRESET' (CRF $CRF_VAL)..."
-          SAMPLE_OUT="/tmp/orvella_sample.mkv"
+          SAMPLE_OUT="/tmp/rusemeva_sample.mkv"
           # -progress pipe -> ambil 'fps=' terakhir
           timeout 75 "$FFMPEG_STATIC" -hide_banner -y -ss 0 -i "$ORIG" -t 60 \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
             -crf "$CRF_VAL" -preset "$PRESET" -tag:v hvc1 \
             -an -progress pipe:1 "$SAMPLE_OUT" 2>/dev/null \
-            | awk -F= '/^fps=/{v=$2} END{ if(v!="") print v }' > /tmp/orvella_fps.txt
-          SAMPLE_FPS=$(cat /tmp/orvella_fps.txt 2>/dev/null | head -1)
+            | awk -F= '/^fps=/{v=$2} END{ if(v!="") print v }' > /tmp/rusemeva_fps.txt
+          SAMPLE_FPS=$(cat /tmp/rusemeva_fps.txt 2>/dev/null | head -1)
           rm -f "$SAMPLE_OUT" 2>/dev/null || true
           if [ -z "$SAMPLE_FPS" ] || awk "BEGIN{exit !($SAMPLE_FPS<=0)}"; then
             echo "⚠️ Sample gak dapet fps -> fallback tabel statis"
@@ -379,10 +379,10 @@ jobs:
               MAX_SS=$(( SRC_DUR_INT - 10 ))
               [ "$SS" -gt "$MAX_SS" ] && SS=$MAX_SS
               [ "$SS" -lt 0 ] && SS=0
-              SAMPLE="/tmp/orvella_scene_${frac}.mp4"
+              SAMPLE="/tmp/rusemeva_scene_${frac}.mp4"
               "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -t 8 -i "$FILE" \
                 -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-                -crf ${BASE_CRF} -preset ultrafast -an "$SAMPLE" >/tmp/orvella_scene_probe.log 2>&1 || true
+                -crf ${BASE_CRF} -preset ultrafast -an "$SAMPLE" >/tmp/rusemeva_scene_probe.log 2>&1 || true
               if [ -s "$SAMPLE" ]; then
                 BY=$(stat -c%s "$SAMPLE" 2>/dev/null || wc -c < "$SAMPLE")
                 # bytes per second of sample
@@ -503,9 +503,9 @@ jobs:
 
 
 
-          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py start || true
+          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py start || true
           LAST_PCT=-1
-          HEVC_LOG=/tmp/orvella_hevc_encode.log
+          HEVC_LOG=/tmp/rusemeva_hevc_encode.log
           # FIX PROGRESS 0%: -progress pipe:1 tulis ke stdout.
           # Pakai '3>&1 1>>...' supaya progress ke fd 3 (yg di-pipe ke while),
           # stderr+stdout utama ke log. Tanpa ini, progress diambil log, while kosong.
@@ -528,13 +528,13 @@ jobs:
                 if [ "$pct" != "$LAST_PCT" ]; then
                   LAST_PCT=$pct
                   echo "🔄 HEVC encode ${pct}%"
-                  CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py progress "$pct" || true
+                  CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py progress "$pct" || true
                 fi
               fi
             done) \
             > "$HEVC_LOG" 2>&1
           echo "🔄 HEVC encode 100%"
-          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id python3 scripts/progress.py done || true
+          CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id python3 scripts/progress.py done || true
 
           if [ -s "$HEVC_FILE" ]; then
             echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}')"
@@ -570,7 +570,7 @@ jobs:
               CUR_CRF=$NEXT_CRF
               HEVC_CRF=$CUR_CRF
               # re-encode (progress bar reset ringan)
-              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py start || true
+              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py start || true
               LAST_PCT=-1
               "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
                 -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
@@ -584,12 +584,12 @@ jobs:
                     pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
                     if [ "$pct" != "$LAST_PCT" ]; then
                       LAST_PCT=$pct
-                      CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py progress "$pct" || true
+                      CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py progress "$pct" || true
                     fi
                   fi
                 done) \
                 > "$HEVC_LOG" 2>&1 || true
-              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py done || true
+              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py done || true
               if [ ! -s "$HEVC_FILE" ]; then
                 echo "❌ Re-encode CRF $CUR_CRF gagal menghasilkan file"
                 break
@@ -612,7 +612,7 @@ jobs:
                   "🪞 <b>Auto-quality:</b> bitrate terlalu rendah (&lt;1.2 Mbps). Re-encode CRF <code>$CUR_CRF</code> → <code>$FLOOR_CRF</code> biar tidak buram." || true
                 CUR_CRF=$FLOOR_CRF
                 HEVC_CRF=$CUR_CRF
-                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py start || true
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py start || true
                 LAST_PCT=-1
                 "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
                   -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
@@ -626,12 +626,12 @@ jobs:
                       pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
                       if [ "$pct" != "$LAST_PCT" ]; then
                         LAST_PCT=$pct
-                        CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py progress "$pct" || true
+                        CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py progress "$pct" || true
                       fi
                     fi
                   done) \
                   > "$HEVC_LOG" 2>&1 || true
-                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py done || true
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py done || true
                 echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
                 HBR_NOW=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
                 echo "🪞 Setelah anti-blur: crf=$CUR_CRF bitrate=${HBR_NOW:-?}"
@@ -851,6 +851,6 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          rm -rf /tmp/orvella_dl 2>/dev/null || true
+          rm -rf /tmp/rusemeva_dl 2>/dev/null || true
           docker rm -f tg-bot-api >/dev/null 2>&1 || true
           echo "✅ Disk runner dibersihkan"

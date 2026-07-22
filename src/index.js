@@ -60,7 +60,7 @@ export default {
         // === #7 Endpoint /rtcal GET: baca kalibrasi RT ===
         if (url.pathname === '/rtcal') {
           const preset = url.searchParams.get('preset') || '';
-          const raw = await env.ORVELLA_KV.get(`orv:rtcal:${preset}`);
+          const raw = await env.RUSEMEVA_KV.get(`orv:rtcal:${preset}`);
           return new Response(raw || '', { status: 200 });
         }
       }
@@ -80,7 +80,7 @@ export default {
             }
             if (id && !isNaN(pct)) {
               // TTL 6 jam (1 encode job max) biar KV gak numpuk
-              await env.ORVELLA_KV.put(`orv:${id}:pct`, String(pct), { expirationTtl: 21600 });
+              await env.RUSEMEVA_KV.put(`orv:${id}:pct`, String(pct), { expirationTtl: 21600 });
             }
             return new Response('OK');
           } catch (_) {
@@ -100,12 +100,12 @@ export default {
               return new Response('forbidden', { status: 403 });
             }
             if (preset && !isNaN(rt) && rt > 0) {
-              const prev = parseFloat(await env.ORVELLA_KV.get(`orv:rtcal:${preset}`) || '');
+              const prev = parseFloat(await env.RUSEMEVA_KV.get(`orv:rtcal:${preset}`) || '');
               let avg = rt;
               if (!isNaN(prev) && prev > 0) {
                 avg = (prev + rt) / 2;
               }
-              await env.ORVELLA_KV.put(`orv:rtcal:${preset}`, avg.toFixed(4), { expirationTtl: 60*86400 });
+              await env.RUSEMEVA_KV.put(`orv:rtcal:${preset}`, avg.toFixed(4), { expirationTtl: 60*86400 });
               return new Response(`ok avg=${avg.toFixed(4)}`, { status: 200 });
             }
             return new Response('bad', { status: 400 });
@@ -124,9 +124,9 @@ export default {
               return new Response('forbidden', { status: 403 });
             }
             if (runId && orvId) {
-              await env.ORVELLA_KV.put(`run:${runId}`, orvId, { expirationTtl: 21600 });
+              await env.RUSEMEVA_KV.put(`run:${runId}`, orvId, { expirationTtl: 21600 });
               // Reverse map: orv_id -> run_id (biar /cancel <ORV> bisa resolve run)
-              await env.ORVELLA_KV.put(`orv:${orvId}:run`, String(runId), { expirationTtl: 21600 });
+              await env.RUSEMEVA_KV.put(`orv:${orvId}:run`, String(runId), { expirationTtl: 21600 });
               return new Response('OK');
             }
             return new Response('bad', { status: 400 });
@@ -186,7 +186,7 @@ export default {
 
         if (text === '/start' || text === '/help') {
           ctx.waitUntil(sendMessage(env.BOT_TOKEN, chatId,
-            '🎬 <b>Orvella Vault</b>\n\n' +
+            '🎬 <b>Rusemeva Vault</b>\n\n' +
                         '<b>Commands:</b>\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; — Process media\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; --referer &lt;url&gt; — Process with referer\n' +
@@ -226,7 +226,7 @@ export default {
         } catch (e) {
           // Kalau handler error, kirim pesan error biar user tahu
           try {
-            await env.ORVELLA_KV.put('orv:rec-log', `${new Date().toISOString()} HANDLER_THREW: ${e.message}`, { expirationTtl: 3600 });
+            await env.RUSEMEVA_KV.put('orv:rec-log', `${new Date().toISOString()} HANDLER_THREW: ${e.message}`, { expirationTtl: 3600 });
           } catch (_) {}
           try {
             await sendMessage(env.BOT_TOKEN, chatId,
@@ -238,7 +238,7 @@ export default {
         return response;
       }
 
-      return new Response('orvella-vault', { status: 200 });
+      return new Response('rusemeva-vault', { status: 200 });
     } catch (err) {
       return response;
     }
@@ -304,7 +304,7 @@ function estEncodeSeconds(profileKey, recordSeconds, probeRes) {
 async function getProfile(env, chatId) {
   try {
     const v = await Promise.race([
-      env.ORVELLA_KV.get(`encprof:${chatId}`),
+      env.RUSEMEVA_KV.get(`encprof:${chatId}`),
       new Promise((_, rej) => setTimeout(() => rej(new Error('kv timeout')), 3000))
     ]);
     if (v && ENCODE_PROFILES[v]) return v;
@@ -315,7 +315,7 @@ async function getProfile(env, chatId) {
 async function setProfile(env, chatId, key) {
   if (!ENCODE_PROFILES[key]) return false;
   try {
-    await env.ORVELLA_KV.put(`encprof:${chatId}`, key);
+    await env.RUSEMEVA_KV.put(`encprof:${chatId}`, key);
     return true;
   } catch (_) {
     return false;
@@ -553,9 +553,9 @@ async function handleRecord(text, chatId, env, ctx) {
         ctx.waitUntil((async () => {
           try {
             const st = await sendMessage(env.BOT_TOKEN, chatId, finalMsg, null, env);
-            await env.ORVELLA_KV.put('orv:sendok', `${new Date().toISOString()} tg=${st} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
+            await env.RUSEMEVA_KV.put('orv:sendok', `${new Date().toISOString()} tg=${st} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
           } catch (e) {
-            await env.ORVELLA_KV.put('orv:senderr', `${new Date().toISOString()} THREW ${e.message} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
+            await env.RUSEMEVA_KV.put('orv:senderr', `${new Date().toISOString()} THREW ${e.message} orv=${fid}`, { expirationTtl: 600 }).catch(() => {});
           }
         })());
       } else {
@@ -611,8 +611,8 @@ async function handleStatus(chatId, env) {
       // Coba resolve ORV ID dari KV (encode tulis run:<id> via /link)
       let orvShown = '';
       try {
-        const orvId = run.display_title?.match(/ORV-[a-z0-9-]+/i)?.[0]
-          || (await env.ORVELLA_KV.get(`run:${run.id}`));
+        const orvId = run.display_title?.match(/(?:RSM|ORV)-[a-z0-9-]+/i)?.[0]
+          || (await env.RUSEMEVA_KV.get(`run:${run.id}`));
         if (orvId) orvShown = `  🏷 ORV: <code>${orvId}</code>\n`;
       } catch (_) {}
       if (orvShown) msg += orvShown;
@@ -634,10 +634,10 @@ async function handleStatus(chatId, env) {
                 pct = ' ⏳ (berjalan)';
                 // Baca % terakhir dari KV: orv:<id>:pct (di-push progress.py tiap 5%)
                 try {
-                  const orvId = run.display_title?.match(/ORV-[a-z0-9-]+/i)?.[0]
-                    || (await env.ORVELLA_KV.get(`run:${run.id}`));
+                  const orvId = run.display_title?.match(/(?:RSM|ORV)-[a-z0-9-]+/i)?.[0]
+                    || (await env.RUSEMEVA_KV.get(`run:${run.id}`));
                   if (orvId) {
-                    const kvPct = await env.ORVELLA_KV.get(`orv:${orvId}:pct`);
+                    const kvPct = await env.RUSEMEVA_KV.get(`orv:${orvId}:pct`);
                     if (kvPct !== null && kvPct !== undefined && kvPct !== '') {
                       const n = parseInt(kvPct, 10);
                       if (!isNaN(n) && n >= 0) pct = ` 🔄 ${n}%`;
@@ -664,7 +664,7 @@ async function handleStatus(chatId, env) {
 }
 
 async function handleCancel(chatId, env, text) {
-  // Cari ID opsional: /cancel ORV-XXXX atau /cancel <run_url>
+  // Cari ID opsional: /cancel RSM-XXXX atau ORV-XXXX (atau ORV- lama) atau /cancel <run_url>
   let targetId = '';
   const parts = (text || '').trim().split(/\s+/);
   if (parts[1]) targetId = parts[1];
@@ -684,7 +684,7 @@ async function handleCancel(chatId, env, text) {
       // Coba resolve dari KV dulu (ID = orv:ID)
       let matched = [];
       try {
-        const meta = await env.ORVELLA_KV.get(`orv:${targetId}`);
+        const meta = await env.RUSEMEVA_KV.get(`orv:${targetId}`);
         if (meta) {
           const m = JSON.parse(meta);
           // KV simpan chat_id; cocokkan dgn chat pengirim
@@ -699,8 +699,8 @@ async function handleCancel(chatId, env, text) {
       // Resolve run IDs dari reverse-map KV (orv_id -> run_id)
       // encode tulis `orv:<id>:run`, record tulis `orv:<id>:recrun`
       try {
-        const encRun = await env.ORVELLA_KV.get(`orv:${targetId}:run`);
-        const recRun = await env.ORVELLA_KV.get(`orv:${targetId}:recrun`);
+        const encRun = await env.RUSEMEVA_KV.get(`orv:${targetId}:run`);
+        const recRun = await env.RUSEMEVA_KV.get(`orv:${targetId}:recrun`);
         const ids = [encRun, recRun].filter(Boolean);
         if (ids.length) {
           for (const rid of ids) {
@@ -784,12 +784,12 @@ function parseDuration(str) {
 // ============ HELPERS ============
 
 // ============ ORV ID GENERATOR ============
-// ID unik per aksi: ORV-<base36 timestamp>-<rand>
+// ID unik per aksi: RSM-<base36 timestamp>-<rand> (lama: ORV-*)
 // Dipakai di /record, /cancel, notif biar user gampang rujuk.
 function genOrvId() {
   const ts = Date.now().toString(36).toUpperCase();
   const rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `ORV-${ts}-${rnd}`;
+  return `RSM-${ts}-${rnd}`;
 }
 
 async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, referer = '', profile = null) {
@@ -797,7 +797,7 @@ async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, re
   // Simpan mapping ID -> chat (biar /status /cancel gampang) — timeout biar gak hang
   try {
     await Promise.race([
-      env.ORVELLA_KV.put(`orv:${orvId}`, JSON.stringify({
+      env.RUSEMEVA_KV.put(`orv:${orvId}`, JSON.stringify({
         chat_id: String(chatId),
         type: 'record',
         created_at: new Date().toISOString(),
@@ -830,7 +830,7 @@ async function triggerGitHubActions(env, m3u8Url, duration, chatId, filename, re
         headers: {
           'Authorization': `token ${env.GH_TOKEN}`,
           'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'orvella-vault'
+          'User-Agent': 'rusemeva-vault'
         },
         body: JSON.stringify({
             event_type: 'record-request',
@@ -866,7 +866,7 @@ function ghApi(env, path, method = 'GET') {
       headers: {
         'Authorization': `token ${env.GH_TOKEN}`,
         'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'orvella-vault'
+        'User-Agent': 'rusemeva-vault'
       },
       signal: AbortSignal.timeout(10000)
     }
@@ -891,7 +891,7 @@ async function sendMessage(token, chatId, text, replyMarkup = null, env = null) 
     if (!r.ok) {
       try {
         const errBody = await r.text();
-        if (env) await env.ORVELLA_KV.put('orv:senderr', `${new Date().toISOString()} status=${r.status} :: ${errBody}`, { expirationTtl: 3600 });
+        if (env) await env.RUSEMEVA_KV.put('orv:senderr', `${new Date().toISOString()} status=${r.status} :: ${errBody}`, { expirationTtl: 3600 });
       } catch (_) {}
     }
   }

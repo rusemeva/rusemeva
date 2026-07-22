@@ -1,6 +1,6 @@
 name: cleanup-temp
 # Safety net: hapus release temp yatim (orphan) biar gak pernah numpuk.
-# Release dg tag orvella-encode-* / orvella-rescue-* itu SELALU temp transien
+# Release dg tag rusemeva-encode-* / rusemeva-rescue-* itu SELALU temp transien
 # (hasil kirim ke user lewat Telegram, BUKAN lewat release).
 # encode.yml sudah hapus pas selesai/gagal/cancelled, tapi kalau workflow
 # kepotong (timeout infra, error tak terduga), cron ini jadi jaring pengaman.
@@ -24,22 +24,23 @@ jobs:
           ACTIVE=$(gh api "repos/$REPO/actions/runs?per_page=30" \
             --jq '[.workflow_runs[] | select(.status=="in_progress") | .id] | join(" ")' 2>/dev/null || echo "")
           echo "🔎 Active runs: $ACTIVE"
-          # JANGAN hapus release temp orvella-encode-* kalau ada encode run masih jalan
+          # JANGAN hapus release temp rusemeva-encode-* kalau ada encode run masih jalan
           # (tag nyimpen RECORD run_id, bukan ENCODE run_id -> harus cek nama workflow).
           ENCODE_ACTIVE=$(gh api "repos/$REPO/actions/runs?per_page=50" \
-            --jq '[.workflow_runs[] | select(.status=="in_progress") | select(.name=="orvella-encode")] | length' 2>/dev/null || echo 0)
+            --jq '[.workflow_runs[] | select(.status=="in_progress") | select(.name=="rusemeva-encode" or .name=="orvella-encode")] | length' 2>/dev/null || echo 0)
           echo "🔎 Encode runs active: $ENCODE_ACTIVE"
           gh api "repos/$REPO/releases?per_page=100" \
             --jq '.[] | "\(.id) \(.tag_name) \(.created_at)"' 2>/dev/null | while read -r id tag created; do
             case "$tag" in
-              orvella-encode-*|orvella-rescue-*)
+              rusemeva-encode-*|rusemeva-rescue-*|orvella-encode-*|orvella-rescue-*)
                 # Jangan hapus kalau ada encode run masih jalan (butuh release ini)
                 if [ "${ENCODE_ACTIVE:-0}" -gt 0 ]; then
                   echo "⏳ skip (ada encode run jalan): $tag"
                   continue
                 fi
                 # Jangan hapus kalau record/encode run-nya masih jalan
-                runid="${tag#orvella-encode-}"
+                runid="${tag#rusemeva-encode-}"
+                runid="${runid#orvella-encode-}"
                 runid="${runid%%-*}"   # buang sisa kalau ada
                 if echo "$ACTIVE" | tr ' ' '\n' | grep -qx "$runid"; then
                   echo "⏳ skip (run $runid masih jalan): $tag"

@@ -1,6 +1,6 @@
 # Cocote — HLS/m3u8 Capture & Browser Automation Scripts
 
-Companion project untuk **Orvella Vault** (`rusemeva/rusemeva`) — kumpulan script
+Companion project untuk **Rusemeva Vault** (`rusemeva/rusemeva`) — kumpulan script
 capture m3u8/HLS, ekstraksi token DRM, dan automation browser (Chrome/CDP).
 
 ## Isi
