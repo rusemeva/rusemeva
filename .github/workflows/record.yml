@@ -1,4 +1,4 @@
-name: orvella-vault
+name: rusemeva-vault
 
 # re-index trigger 2026-07-15
 permissions:
@@ -73,11 +73,11 @@ jobs:
         run: |
           NOW=$(date '+%Y-%m-%d_%H-%M-%S')
           DURATION_LABEL="${{ steps.inputs.outputs.duration_label }}"
-          FNAME="Orvella-Asset-${NOW}-${DURATION_LABEL}.mp4"
+          FNAME="Rusemeva-Asset-${NOW}-${DURATION_LABEL}.mp4"
           echo "filename=$FNAME" >> $GITHUB_OUTPUT
 
-      # === Link run rekam -> ORV-ID ke KV (biar /cancel <ORV> bisa resolve) ===
-      - name: Link rekam run ke ORV-ID (KV)
+      # === Link run rekam -> RSM-ID ke KV (biar /cancel <ORV> bisa resolve) ===
+      - name: Link rekam run ke RSM-ID (KV)
         if: always()
         continue-on-error: true
         env:
@@ -204,8 +204,8 @@ jobs:
               TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
               BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
               PHASE_LABEL=Rekam \
-              PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
-              PROGRESS_STATE_FILE=/tmp/orvella_rec_state \
+              PROGRESS_MSG_FILE=/tmp/rusemeva_rec_msg_id \
+              PROGRESS_STATE_FILE=/tmp/rusemeva_rec_state \
               python3 scripts/progress.py start 2>/dev/null || true
             set +e
             # `timeout` = backstop keras: bunuh ffmpeg (SIGTERM, lalu SIGKILL +30s)
@@ -227,8 +227,8 @@ jobs:
                   CHAT_ID="${{ steps.inputs.outputs.chat_id }}" FILENAME="$FILE" \
                     TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
                     BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
-                    PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
-                    PROGRESS_STATE_FILE=/tmp/orvella_rec_state \
+                    PROGRESS_MSG_FILE=/tmp/rusemeva_rec_msg_id \
+                    PROGRESS_STATE_FILE=/tmp/rusemeva_rec_state \
                     python3 scripts/progress.py progress "$pct" 2>/dev/null || true
                 fi
               fi
@@ -289,7 +289,7 @@ jobs:
                 TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
                 BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
                 PHASE_LABEL=Rekam \
-                PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
+                PROGRESS_MSG_FILE=/tmp/rusemeva_rec_msg_id \
                 python3 scripts/progress.py done 2>/dev/null || true
               break
             fi
@@ -309,7 +309,7 @@ jobs:
               TG_API_URL="${{ secrets.TG_API_URL || 'http://localhost:8081' }}" \
               BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
               PHASE_LABEL=Rekam \
-              PROGRESS_MSG_FILE=/tmp/orvella_rec_msg_id \
+              PROGRESS_MSG_FILE=/tmp/rusemeva_rec_msg_id \
               python3 scripts/progress.py fail 2>/dev/null || true
             exit 1
           fi
@@ -476,11 +476,11 @@ jobs:
             exit 1
           fi
           echo "📄 File original: $FILE ($(numfmt --to=iec $(stat -c%s "$FILE" 2>/dev/null || echo 0)))"
-          TAG="orvella-encode-${{ github.run_id }}"
-          TEMP_NOTES="Orvella encode temp source (dihapus setelah encode). JANGAN dihapus manual sebelum encode selesai."
+          TAG="rusemeva-encode-${{ github.run_id }}"
+          TEMP_NOTES="Rusemeva encode temp source (dihapus setelah encode). JANGAN dihapus manual sebelum encode selesai."
           # Buat release temp (kosong dulu)
           gh release create "$TAG" --repo "${{ github.repository }}" \
-            --title "Orvella Encode Temp ${{ github.run_id }}" \
+            --title "Rusemeva Encode Temp ${{ github.run_id }}" \
             --notes "$TEMP_NOTES"
           echo "📦 Temp release: $TAG"
           # Upload source: pakai relative path ./ (hindari gh 2.x glob bug "no matches found")
@@ -496,7 +496,7 @@ jobs:
               || { echo "  ❌ gagal upload original"; exit 1; }
           fi
           echo "✅ Upload selesai. Trigger encode..."
-          # Trigger orvella-encode
+          # Trigger rusemeva-encode
           gh api repos/${{ github.repository }}/dispatches \
             -f event_type=encode-request \
             -f "client_payload[filename]=${FILE}" \
@@ -508,8 +508,8 @@ jobs:
             -f "client_payload[hevc_crf]=${HEVC_CRF}" \
             -f "client_payload[encode_profile]=${ENCODE_PROFILE}" \
             -f "client_payload[orv_id]=${ORV_ID}" \
-            && echo "✅ orvella-encode di-trigger" \
-            || { echo "⚠️ Gagal trigger orvella-encode"; exit 1; }
+            && echo "✅ rusemeva-encode di-trigger" \
+            || { echo "⚠️ Gagal trigger rusemeva-encode"; exit 1; }
 
       - name: Buat .txt (update log kecil) + Release ringan
         if: success()
@@ -517,8 +517,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           FILE="${{ steps.fname.outputs.filename }}"
-          TAG="orvella-$(date +%s)"
-          TITLE="Orvella Vault — $(date '+%Y-%m-%d %H:%M:%S') WIB (${{ steps.inputs.outputs.duration_label }})"
+          TAG="rusemeva-$(date +%s)"
+          TITLE="Rusemeva Vault — $(date '+%Y-%m-%d %H:%M:%S') WIB (${{ steps.inputs.outputs.duration_label }})"
 
           # --- Extract SEMUA URL segmen .ts dari playlist (bukan cuma 1) ---
           M3U8="${{ steps.inputs.outputs.m3u8_url }}"
@@ -569,7 +569,7 @@ jobs:
           # .txt = metadata + daftar SEMUA segmen .ts (boleh panjang; ratusan-ribuan baris OK)
           TXT="${FILE%.mp4}.txt"
           {
-            echo "# Orvella Vault — record update"
+            echo "# Rusemeva Vault — record update"
             echo "file: ${FILE}"
             echo "size: ${FILE_SIZE}"
             echo "durasi: ${REAL_DURATION}"
@@ -593,7 +593,7 @@ jobs:
           } > "$TXT"
           rm -f "$TS_LIST_FILE" 2>/dev/null || true
 
-          NOTES="Orvella Vault — record update. Metadata + full daftar segmen .ts. Video dikirim ke Telegram (tidak disimpan di GitHub)."
+          NOTES="Rusemeva Vault — record update. Metadata + full daftar segmen .ts. Video dikirim ke Telegram (tidak disimpan di GitHub)."
 
           # Release cuma berisi .txt (boleh besar kalau segmen banyak; tetap teks, bukan video)
           gh release create "$TAG" --repo "${{ github.repository }}" \

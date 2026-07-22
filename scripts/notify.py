@@ -117,7 +117,7 @@ def send_video(video_path, thumb_path, caption):
         print(f"⚠️ Video {size/1024/1024/1024:.2f} GB > 2 GB, tidak dikirim langsung.")
         return False
 
-    boundary = f"----orvella{uuid.uuid4().hex}"
+    boundary = f"----rusemeva{uuid.uuid4().hex}"
 
     parts = []
     # chat_id
@@ -182,7 +182,7 @@ def send_photo_fallback(photo_path, caption):
         print(f"⚠️ Gagal baca thumbnail: {e}")
         return False
 
-    boundary = f"----orvella{uuid.uuid4().hex}"
+    boundary = f"----rusemeva{uuid.uuid4().hex}"
     fname = os.path.basename(photo_path)
     ctype = mimetypes.guess_type(fname)[0] or "image/jpeg"
 
@@ -260,7 +260,7 @@ if job_status == "success":
             send_message(
                 f"⚠️ <b>Original {orig_bytes/1024/1024/1024:.2f} GB &gt; 2GB limit</b> — tidak dikirim ke Telegram (batas Bot API 2GB).\n"
                 f"📦 File: <code>{filename}</code>\n"
-                f"🎞 Video ini di-encode ke HEVC 10-bit di workflow terpisah (<code>orvella-encode</code>).\n"
+                f"🎞 Video ini di-encode ke HEVC 10-bit di workflow terpisah (<code>rusemeva-encode</code>).\n"
                 f"📤 Hasil HEVC akan dikirim <b>JIKA encode berhasil</b>; bila gagal akan ada notifikasi error."
             )
         elif os.path.isfile(filename) and os.path.getsize(filename) > 0:
@@ -268,19 +268,19 @@ if job_status == "success":
             res = send_video_with_fallback(filename, caption_orig, thumb_path)
             # Capture file_id (kalau sukses lewat sendVideo) untuk trigger encode terpisah
             if isinstance(res, str):
-                with open("/tmp/orvella_orig_file_id.txt", "w") as f:
+                with open("/tmp/rusemeva_orig_file_id.txt", "w") as f:
                     f.write(res)
                 print(f"✅ ORIGINAL terkirim, file_id={res[:20]}... (disimpan untuk encode)", flush=True)
             elif res is True:
                 print("✅ ORIGINAL terkirim (via fallback, tanpa file_id).", flush=True)
 
-            # Info: HEVC di-encode di workflow TERPISAH (orvella-encode, full 6 jam)
+            # Info: HEVC di-encode di workflow TERPISAH (rusemeva-encode, full 6 jam)
             enc_secs, rt = estimate_encode(human_dur)
             warn = ""
             if enc_secs > 6 * 3600:
                 warn = "\n⚠️ <b>Estimasi &gt; 6 jam</b> — encode bisa ke-potong limit GitHub (auto-downgrade ke preset lebih cepat otomatis dilakukan di encode.yml)."
             send_message(
-                f"⏳ <b>HEVC 10-bit sedang di-encode terpisah</b> (workflow <code>orvella-encode</code>, hingga 6 jam).\n"
+                f"⏳ <b>HEVC 10-bit sedang di-encode terpisah</b> (workflow <code>rusemeva-encode</code>, hingga 6 jam).\n"
                 f"🎚 Preset: <code>{hevc_preset}</code> (CRF {hevc_crf})\n"
                 f"⏱ Estimasi encode: <b>{fmt_dur(enc_secs)}</b> (~{rt}x realtime)\n"
                 f"🕐 Prediksi selesai ~<b>{eta_clock(enc_secs // 60)}</b>\n"
@@ -395,11 +395,11 @@ else:
         out = subprocess.run(
             ["gh", "api", f"repos/{repo}/actions/runs/{run_id}/logs",
              "--header", "Accept: application/vnd.github+json",
-             "-o", "/tmp/orvella_run.log.zip"],
+             "-o", "/tmp/rusemeva_run.log.zip"],
             capture_output=True, text=True, timeout=60)
         if out.returncode == 0:
             import zipfile
-            with zipfile.ZipFile("/tmp/orvella_run.log.zip") as z:
+            with zipfile.ZipFile("/tmp/rusemeva_run.log.zip") as z:
                 # gabungkan semua log step, ambil 1500 char terakhir
                 full = ""
                 for n in z.namelist():
