@@ -384,6 +384,65 @@ jobs:
 
           if [ -s "$HEVC_FILE" ]; then
             echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}')"
+
+            # === AUTO BITRATE/SIZE GUARD ===
+            # Target: HEVC harus lebih kecil dari original (kayak run 18 Jul: 2.2→1.4 Mbps).
+            # Kalau masih >= original, naikkan CRF bertahap (lebih longgar) lalu re-encode.
+            # Batas max CRF 30 biar kualitas tetap oke (tidak jelek parah).
+            # Target hemat: HEVC <= 90% original (margin kecil biar "turun beneran").
+            ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || wc -c < "$FILE")
+            TARGET_BYTES=$(awk "BEGIN{printf \"%d\", $ORIG_BYTES * 0.90}")
+            CUR_CRF="$HEVC_CRF"
+            MAX_CRF=30
+            try=0
+            while true; do
+              HEVC_BYTES=$(stat -c%s "$HEVC_FILE" 2>/dev/null || wc -c < "$HEVC_FILE")
+              echo "📏 size: orig=${ORIG_BYTES} hevc=${HEVC_BYTES} target<=${TARGET_BYTES} (crf=${CUR_CRF})"
+              if [ "$HEVC_BYTES" -le "$TARGET_BYTES" ]; then
+                echo "✅ Size OK (HEVC <= 90% original) di CRF $CUR_CRF"
+                break
+              fi
+              NEXT_CRF=$((CUR_CRF + 2))
+              if [ "$NEXT_CRF" -gt "$MAX_CRF" ]; then
+                echo "⚠️ Masih besar di CRF $CUR_CRF, tapi sudah cap $MAX_CRF — stop biar kualitas tidak jelek."
+                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+                  "⚠️ <b>Auto-size:</b> HEVC masih besar di CRF $CUR_CRF (cap $MAX_CRF). Kualitas dipertahankan, size tidak dipaksa lebih kecil." || true
+                break
+              fi
+              try=$((try + 1))
+              echo "🔻 Auto-size try#$try: CRF $CUR_CRF → $NEXT_CRF (HEVC masih >= 90% original)"
+              CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+                "🔻 <b>Auto-size:</b> file HEVC masih besar, re-encode CRF <code>$CUR_CRF</code> → <code>$NEXT_CRF</code> (target &lt; original, max CRF $MAX_CRF)." || true
+              CUR_CRF=$NEXT_CRF
+              HEVC_CRF=$CUR_CRF
+              # re-encode (progress bar reset ringan)
+              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py start || true
+              LAST_PCT=-1
+              "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
+                -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
+                -crf ${CUR_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
+                -c:a copy -progress pipe:3 "$HEVC_FILE" \
+                3> >(while IFS='=' read -r k v; do
+                  if [ "$k" = "out_time_ms" ]; then
+                    ms=${v%.*}
+                    [ "$ms" -gt 0 ] 2>/dev/null || continue
+                    cur=$(( ms / 1000000 ))
+                    pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
+                    if [ "$pct" != "$LAST_PCT" ]; then
+                      LAST_PCT=$pct
+                      CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py progress "$pct" || true
+                    fi
+                  fi
+                done) \
+                > "$HEVC_LOG" 2>&1 || true
+              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py done || true
+              if [ ! -s "$HEVC_FILE" ]; then
+                echo "❌ Re-encode CRF $CUR_CRF gagal menghasilkan file"
+                break
+              fi
+            done
+            echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
+
             echo "HEVC_FILE=$HEVC_FILE" >> $GITHUB_ENV
             echo "HEVC_SIZE=$(ls -lh "$HEVC_FILE" | awk '{print $5}')" >> $GITHUB_ENV
             HDUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
