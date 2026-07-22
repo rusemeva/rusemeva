@@ -191,28 +191,35 @@ jobs:
           fi
           echo "🎞 FPS encode sample ($PRESET): ${SAMPLE_FPS:-?}"
 
+          # LADDER: dari TERCEPAT (ultrafast) ke TERLAMBAT (placebo).
+          # Loop urutan ini, pilih preset PERTAMA yang muat = TERCEPAT yang muat.
+          # Preset USER hanya jadi BATAS ATAS (tidak akan di-upgrade ke lebih lambat
+          # dari yang user mau, tapi boleh di-downgrade ke yang lebih cepat).
+          LADDER=( ultrafast superfast veryfast faster fast medium slow slower veryslow placebo )
+          # Index preset di LADDER (untuk tau mana yang "lebih cepat" dari user choice)
+          declare -A LADDER_IDX=(
+            [ultrafast]=0 [superfast]=1 [veryfast]=2 [faster]=3 [fast]=4
+            [medium]=5 [slow]=6 [slower]=7 [veryslow]=8 [placebo]=9
+          )
           # Faktor relatif antar preset (standar x265 ladder; medium=1.0)
           declare -A RT=(
             [ultrafast]=20 [superfast]=12 [veryfast]=6 [faster]=4 [fast]=3
             [medium]=1.0 [slow]=0.7 [slower]=0.45 [veryslow]=0.25 [placebo]=0.1
             [speed]=6 [balanced]=1.0 [quality]=0.7 [max]=0.25
           )
-          LADDER=( placebo veryslow slower slow medium fast faster veryfast superfast ultrafast )
+          USER_IDX=${LADDER_IDX[$PRESET]:-5}
+          USER_RT=${RT[$PRESET]:-0.3}
 
           # realtime_x dasar: dari sample (atau fallback tabel)
           if [ -n "$SAMPLE_FPS" ] && awk "BEGIN{exit !($SAMPLE_FPS>0)}"; then
             BASE_RT=$(awk "BEGIN{printf \"%.4f\", $SAMPLE_FPS / $VFPS_NUM}")
           else
-            # fallback: pakai tabel statis buat preset pilihan
-            PRT=${RT[$PRESET]:-0.3}
-            BASE_RT=$PRT
+            BASE_RT=$USER_RT
             echo "↩️ Fallback realtime_x=$BASE_RT (tabel)"
           fi
           echo "🔁 realtime_x dasar ($PRESET): ${BASE_RT}x"
 
           # === #7 KALIBRASI RT OTOMATIS ===
-          # KV orv:rtcal:<preset> menyimpan realtime_x AKTUAL (rata-rata histori).
-          # Kalau ada, pakai sebagai BASE_RT (lebih akurat dari sample 60s).
           CAL=""
           if command -v curl >/dev/null 2>&1; then
             CAL=$(curl -fsS --retry 2 --retry-delay 2 "https://rusemeva.rusemeva.workers.dev/rtcal?preset=${PRESET}" 2>/dev/null | head -c 40)
@@ -224,32 +231,68 @@ jobs:
             echo "ℹ️ Belum ada kalibrasi untuk '$PRESET' — pakai sample riil."
           fi
 
-          # Estimasi per preset: est_min = (DUR/60 / realtime_x_preset) + overhead
-          # realtime_x_preset = BASE_RT * (RT[PRESET] / RT[chosen])
-          CHOSEN_RT=${RT[$PRESET]:-0.3}
+          # === FIX AUTO-DOWNGRADE ===
+          # Logika BENAR: hanya downgrade kalau preset USER tidak muat.
+          # Kalau muat, pertahankan preset USER (no downgrade).
+          # Kalau harus downgrade, pilih preset TERCEPAT yang muat
+          # (tidak lebih cepat dari ultrafast).
+          #
+          # Hitung estimasi preset USER dulu.
+          user_rtp=$(awk "BEGIN{printf \"%.4f\", $BASE_RT * ($USER_RT / $USER_RT)}")  # = BASE_RT
+          user_est=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $user_rtp) + $OVERHEAD_MIN}")
+          echo "📊 Preset user '$PRESET': est ${user_est}m (limit ${LIMIT_MIN}m)"
 
           FINAL="$PRESET"
           FINAL_CRF="$CRF_VAL"
-          FINAL_RT="$BASE_RT"
-          best_est=9999
-          for p in "${LADDER[@]}"; do
-            prt=${RT[$p]:-1.0}
-            # realtime_x untuk preset p
-            rtp=$(awk "BEGIN{printf \"%.4f\", $BASE_RT * ($prt / $CHOSEN_RT)}")
-            est=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $rtp) + $OVERHEAD_MIN}")
-            echo "   • $p: ${rtp}x realtime -> est ${est}m"
-            # pilih preset TERTINGGI (paling lambat = realtime_x terkecil) yg muat
-            if [ "$est" -le "$LIMIT_MIN" ]; then
-              if awk "BEGIN{exit !($rtp < $FINAL_RT)}"; then
-                FINAL="$p"; FINAL_CRF="$CRF_VAL"; FINAL_RT="$rtp"
+          FINAL_RT="$user_rtp"
+          if [ "$user_est" -le "$LIMIT_MIN" ]; then
+            echo "✅ Preset user MUAT — pertahankan $PRESET (no downgrade)"
+          else
+            # Harus downgrade. Loop dari TERCEPAT (idx 0) ke index USER (inclusive).
+            # Pilih preset PERTAMA (tercepat) yang muat.
+            echo "⚠️ Preset user tidak muat — cari alternatif tercepat yang muat..."
+            for idx in 0 1 2 3 4 5 6 7 8 9; do
+              # Skip kalau lebih lambat dari user choice (idx > USER_IDX)
+              [ "$idx" -gt "$USER_IDX" ] && continue
+              # Map idx -> nama preset
+              case $idx in
+                0) p="ultrafast" ;;
+                1) p="superfast" ;;
+                2) p="veryfast" ;;
+                3) p="faster" ;;
+                4) p="fast" ;;
+                5) p="medium" ;;
+                6) p="slow" ;;
+                7) p="slower" ;;
+                8) p="veryslow" ;;
+                9) p="placebo" ;;
+              esac
+              prt=${RT[$p]:-1.0}
+              rtp=$(awk "BEGIN{printf \"%.4f\", $BASE_RT * ($prt / $USER_RT)}")
+              est=$(awk "BEGIN{printf \"%d\", ($DUR/60 / $rtp) + $OVERHEAD_MIN}")
+              echo "   • $p: ${rtp}x realtime -> est ${est}m"
+              if [ "$est" -le "$LIMIT_MIN" ]; then
+                FINAL="$p"
+                FINAL_CRF="$CRF_VAL"
+                FINAL_RT="$rtp"
+                echo "✅ Pilih: $p (tercepat yang muat)"
+                break
               fi
-            fi
-          done
+            done
+          fi
+
+          # Kalau sampai akhir loop masih tidak muat, fallback ke ultrafast
+          if [ "$FINAL" = "$PRESET" ] && [ "$user_est" -gt "$LIMIT_MIN" ]; then
+            FINAL="ultrafast"
+            FINAL_CRF="$CRF_VAL"
+            FINAL_RT=$(awk "BEGIN{printf \"%.4f\", $BASE_RT * (${RT[ultrafast]} / $USER_RT)}")
+            echo "🚨 Tidak ada preset yang muat — fallback ke ultrafast (resiko encode bisa ke-potong)"
+          fi
 
           if [ "$FINAL" = "$PRESET" ]; then
-            echo "✅ Estimasi aman, pakai preset asli: $FINAL (${FINAL_RT}x, est di bawah ${LIMIT_MIN}m)"
+            echo "✅ Final: preset asli $FINAL (${FINAL_RT}x, est di bawah ${LIMIT_MIN}m)"
           else
-            echo "🔻 Turun ke: $FINAL (CRF $FINAL_CRF, ${FINAL_RT}x realtime) biar muat 6 jam"
+            echo "🔻 Turun ke: $FINAL (CRF $FINAL_CRF, ${FINAL_RT}x realtime) dari $PRESET biar muat 6 jam"
           fi
           echo "FINAL_PRESET=$FINAL" >> $GITHUB_OUTPUT
           echo "FINAL_CRF=$FINAL_CRF" >> $GITHUB_OUTPUT
@@ -315,23 +358,27 @@ jobs:
           CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py start || true
           LAST_PCT=-1
           HEVC_LOG=/tmp/orvella_hevc_encode.log
+          # FIX PROGRESS 0%: -progress pipe:1 tulis ke stdout.
+          # Pakai '3>&1 1>>...' supaya progress ke fd 3 (yg di-pipe ke while),
+          # stderr+stdout utama ke log. Tanpa ini, progress diambil log, while kosong.
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
             -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
-            -c:a copy -progress pipe:1 "$HEVC_FILE" > "$HEVC_LOG" 2>&1 | while IFS='=' read -r k v; do
-            if [ "$k" = "out_time_ms" ]; then
-              ms=${v%.*}
-              [ "$ms" -gt 0 ] 2>/dev/null || continue
-              cur=$(( ms / 1000000 ))
-              pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
-              # Forward tiap perubahan %, progress.py yg akan throttle (5% / 5s)
-              if [ "$pct" != "$LAST_PCT" ]; then
-                LAST_PCT=$pct
-                echo "🔄 HEVC encode ${pct}%"
-                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py progress "$pct" || true
+            -c:a copy -progress pipe:3 "$HEVC_FILE" \
+            3> >(while IFS='=' read -r k v; do
+              if [ "$k" = "out_time_ms" ]; then
+                ms=${v%.*}
+                [ "$ms" -gt 0 ] 2>/dev/null || continue
+                cur=$(( ms / 1000000 ))
+                pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
+                if [ "$pct" != "$LAST_PCT" ]; then
+                  LAST_PCT=$pct
+                  echo "🔄 HEVC encode ${pct}%"
+                  CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" python3 scripts/progress.py progress "$pct" || true
+                fi
               fi
-            fi
-          done
+            done) \
+            > "$HEVC_LOG" 2>&1
           echo "🔄 HEVC encode 100%"
           CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id python3 scripts/progress.py done || true
 
