@@ -18,7 +18,7 @@ const ENCODE_PROFILES = {
     preset: 'veryfast',
     crf: 26,
     quality: '🟢 bagus',
-    note: 'Default. CRF awal 26 (mirip hasil hemat 18 Jul). Auto-size jaga file < original.',
+    note: 'Default. CRF awal 26 (mirip hasil hemat 18 Jul). Auto-size jaga file lebih kecil dari original.',
   },
   quality: {
     key: 'quality',
@@ -317,13 +317,21 @@ async function handleSetting(chatId, env) {
   for (const k of Object.keys(ENCODE_PROFILES)) {
     const p = ENCODE_PROFILES[k];
     const mark = k === current ? ' ✓' : '';
+    // escape note for HTML parse_mode (notes may contain < > &)
+    const note = escapeHtml(p.note || '');
     msg += `${p.label}${mark}\n`;
     msg += `  └ /setting ${p.key}\n`;
     msg += `     preset: ${p.preset} | crf: ${p.crf} | kualitas: ${p.quality}\n`;
-    msg += `     ${p.note}\n\n`;
+    msg += `     ${note}\n\n`;
   }
   msg += '💡 Estimasi waktu encode otomatis disesuaikan durasi rekam. Contoh pakai /record 120m.';
-  await sendMessage(env.BOT_TOKEN, chatId, msg, settingsKeyboard());
+  // pass env so send errors land in KV; keyboard optional
+  const st = await sendMessage(env.BOT_TOKEN, chatId, msg, settingsKeyboard(), env);
+  if (st && st >= 400) {
+    // fallback plain text without keyboard if HTML/markup rejected
+    const plain = msg.replace(/<[^>]+>/g, '');
+    await sendMessage(env.BOT_TOKEN, chatId, plain, null, env);
+  }
 }
 
 async function handleSettingSelect(text, chatId, env) {
@@ -352,7 +360,7 @@ async function handleSettingSelect(text, chatId, env) {
   let msg = `✅ Profil diubah ke <b>${p.label}</b>\n\n` +
     `⚙️ preset: <code>${p.preset}</code> | crf: <code>${p.crf}</code>\n` +
     `🟢 kualitas: ${p.quality}\n` +
-    `📦 ${p.note}\n`;
+    `📦 ${escapeHtml(p.note || '')}\n`;
 
   if (durSec && durSec > 0) {
     msg += `\n<b>Estimasi encode (rekam ${formatDuration(durSec)}):</b>\n`;
