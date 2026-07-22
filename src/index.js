@@ -187,10 +187,15 @@ export default {
           return response;
         }
 
-        const text = update.message?.text;
+        let text = update.message?.text;
         const chatId = update.message?.chat?.id;
 
         if (!text || !chatId) return response;
+
+        // Telegram kadang kirim /setting@BotName — normalisasi biar command ketemu
+        if (text.startsWith('/')) {
+          text = text.replace(/^\/([A-Za-z0-9_]+)@[A-Za-z0-9_]+/, '/$1');
+        }
 
         // AWAIT all handlers — pastikan sendMessage selesai sebelum return OK
         // (ctx.waitUntil bs terputus kalau worker return terlalu cepat)
@@ -387,7 +392,7 @@ async function handleSettingSelect(text, chatId, env) {
       msg += `\n⏳ Total ~${formatDuration(totalThis)} — masih aman di bawah limit 6 jam.`;
     }
   } else {
-    msg += `\n💡 Ketik /setting ${key} <durasi> (contoh: /setting ${key} 120m) untuk estimasi waktu encode.`;
+    msg += `\n💡 Ketik /setting ${key} &lt;durasi&gt; (contoh: /setting ${key} 120m) untuk estimasi waktu encode.`;
   }
 
   await sendMessage(env.BOT_TOKEN, chatId, msg);
@@ -463,7 +468,7 @@ async function handleRecord(text, chatId, env, ctx) {
         const runId = r.id ? String(r.id) : '';
         msg += `• ${phase}\n  🆔 Run ID: <code>${runId}</code>\n  🔗 ${r.html_url}\n`;
       }
-      msg += '\nGunakan /cancel ' + (running[0].id ? String(running[0].id) : '<run_id>') + ' untuk membatalkan, atau /status untuk detail.';
+      msg += '\nGunakan /cancel ' + (running[0].id ? String(running[0].id) : '&lt;run_id&gt;') + ' untuk membatalkan, atau /status untuk detail.';
       await sendMessage(env.BOT_TOKEN, chatId, msg);
       return new Response('OK');
     }

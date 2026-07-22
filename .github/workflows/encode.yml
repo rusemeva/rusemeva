@@ -562,6 +562,53 @@ jobs:
           PHASE: hevc
         run: python3 scripts/notify.py
 
+      - name: Auto-retry encode 1 level lebih cepat (kalau gagal)
+        id: autoretry
+        if: failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
+          CHAT_ID: ${{ steps.inputs.outputs.chat_id || '' }}
+          FILENAME: ${{ steps.inputs.outputs.filename || '' }}
+          # Pakai preset FINAL (hasil autodg), bukan preset input mentah
+          CUR_PRESET: ${{ steps.autodg.outputs.FINAL_PRESET || steps.inputs.outputs.hevc_preset || 'veryfast' }}
+          CUR_CRF: ${{ steps.autodg.outputs.FINAL_CRF || steps.inputs.outputs.hevc_crf || '24' }}
+          RELEASE_TAG: ${{ steps.inputs.outputs.release_tag || '' }}
+          DURATION: ${{ steps.inputs.outputs.duration || '' }}
+          HUMAN_DUR: ${{ steps.inputs.outputs.human_duration || '' }}
+        run: |
+          # Hanya retry kalau masih ada release temp (sumber original)
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "⚠️ release_tag kosong — auto-retry tidak mungkin (tidak ada sumber)."
+            echo "retried=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # Tentukan preset 1 level lebih cepat dari FINAL
+          case "$CUR_PRESET" in
+            placebo|veryslow|slower|slow|medium) NEXT_PRESET=faster;  NEXT_CRF=24 ;;
+            faster)   NEXT_PRESET=fast;     NEXT_CRF=24 ;;
+            fast)     NEXT_PRESET=veryfast; NEXT_CRF=24 ;;
+            veryfast) NEXT_PRESET=superfast; NEXT_CRF=26 ;;
+            superfast) NEXT_PRESET=ultrafast; NEXT_CRF=26 ;;
+            *)        echo "ℹ️ Sudah di preset tercepat ($CUR_PRESET), stop auto-retry."; echo "retried=0" >> $GITHUB_OUTPUT; exit 0 ;;
+          esac
+          echo "🔁 Auto-retry: $CUR_PRESET -> $NEXT_PRESET (crf $NEXT_CRF) tag=$RELEASE_TAG"
+          gh api repos/${{ github.repository }}/dispatches \
+            -f event_type=encode-request \
+            -f "client_payload[filename]=$FILENAME" \
+            -f "client_payload[chat_id]=$CHAT_ID" \
+            -f "client_payload[release_tag]=$RELEASE_TAG" \
+            -f "client_payload[duration]=$DURATION" \
+            -f "client_payload[human_duration]=$HUMAN_DUR" \
+            -f "client_payload[hevc_preset]=$NEXT_PRESET" \
+            -f "client_payload[hevc_crf]=$NEXT_CRF" \
+            -f "client_payload[orv_id]=$ORV_ID" \
+            -f "client_payload[auto_retry]=1" || true
+          echo "retried=1" >> $GITHUB_OUTPUT
+          echo "✅ Auto-retry dispatched ($NEXT_PRESET)."
+
+
       - name: Hapus GitHub Release sementara (cleanup storage) — HANYA kalau encode sukses
         if: success()
         continue-on-error: true
@@ -574,7 +621,8 @@ jobs:
           gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
 
       - name: Hapus GitHub Release sementara kalau GAGAL (anti numpuk)
-        if: failure()
+        # Jangan hapus kalau auto-retry masih butuh release temp
+        if: failure() && steps.autoretry.outputs.retried != '1'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -589,7 +637,8 @@ jobs:
       # Sebelumnya cancelled run gak kehapus (step di atas cuma failure/success),
       # sehingga temp release numpuk jadi ratusan part. Step ini idempoten.
       - name: Hapus release temp (selalu, incl. cancelled) — anti numpuk
-        if: always()
+        # Skip kalau auto-retry butuh release temp untuk run berikutnya
+        if: always() && steps.autoretry.outputs.retried != '1'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -602,40 +651,6 @@ jobs:
       # === #3 AUTO-RETRY: kalau encode gagal, redispatch 1 level lebih cepat ===
       # Level: medium > faster > fast > veryfast(tetap) ; stop setelah veryfast.
       # Release temp SUDAH dihapus di atas biar gak numpuk; dispatch baru bikin release baru.
-      - name: Auto-retry encode 1 level lebih cepat (kalau gagal)
-        if: failure()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
-          CHAT_ID: ${{ steps.inputs.outputs.chat_id || '' }}
-          FILENAME: ${{ steps.inputs.outputs.filename || '' }}
-          SRC_URL: ${{ steps.inputs.outputs.m3u8_url || '' }}
-          REFERRER: ${{ steps.inputs.outputs.referer || '' }}
-          CUR_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
-          CUR_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
-        run: |
-          # Tentukan preset turun 1 level
-          case "$CUR_PRESET" in
-            medium)   NEXT_PRESET=faster;  NEXT_CRF=22 ;;
-            faster)   NEXT_PRESET=fast;    NEXT_CRF=23 ;;
-            fast)     NEXT_PRESET=veryfast; NEXT_CRF=24 ;;
-            *)        echo "ℹ️ Sudah veryfast, tidak auto-retry lagi (stop di veryfast)."; exit 0 ;;
-          esac
-          echo "🔁 Auto-retry: $CUR_PRESET -> $NEXT_PRESET (crf $NEXT_CRF)"
-          # Update KV meta (buat /status)
-          gh api repos/${{ github.repository }}/dispatches \
-            -f event_type=encode-request \
-            -f "client_payload[filename]=$FILENAME" \
-            -f "client_payload[chat_id]=$CHAT_ID" \
-            -f "client_payload[m3u8_url]=$SRC_URL" \
-            -f "client_payload[referer]=$REFERRER" \
-            -f "client_payload[hevc_preset]=$NEXT_PRESET" \
-            -f "client_payload[hevc_crf]=$NEXT_CRF" \
-            -f "client_payload[orv_id]=$ORV_ID" \
-            -f "client_payload[auto_retry]=1" || true
-          echo "✅ Auto-retry dispatched ($NEXT_PRESET)."
-
       - name: Bersihkan disk runner
         if: always()
         continue-on-error: true
