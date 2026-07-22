@@ -166,8 +166,18 @@ export default {
           return response;
         }
 
-        if (update.message?.text === '/start' || update.message?.text === '/help') {
-          ctx.waitUntil(sendMessage(env.BOT_TOKEN, update.message.chat.id,
+        let text = update.message?.text;
+        const chatId = update.message?.chat?.id;
+
+        if (!text || !chatId) return response;
+
+        // Telegram sering kirim /cmd@BotName — normalisasi SEBELUM semua route
+        if (text.startsWith('/')) {
+          text = text.replace(/^\/([A-Za-z0-9_]+)@[A-Za-z0-9_]+/, '/$1');
+        }
+
+        if (text === '/start' || text === '/help') {
+          ctx.waitUntil(sendMessage(env.BOT_TOKEN, chatId,
             '🎬 <b>Orvella Vault</b>\n\n' +
                         '<b>Commands:</b>\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; — Process media\n' +
@@ -185,16 +195,6 @@ export default {
                         '/record https://example.com/stream.m3u8 1h30m --referer https://example.com'
           ));
           return response;
-        }
-
-        let text = update.message?.text;
-        const chatId = update.message?.chat?.id;
-
-        if (!text || !chatId) return response;
-
-        // Telegram kadang kirim /setting@BotName — normalisasi biar command ketemu
-        if (text.startsWith('/')) {
-          text = text.replace(/^\/([A-Za-z0-9_]+)@[A-Za-z0-9_]+/, '/$1');
         }
 
         // AWAIT all handlers — pastikan sendMessage selesai sebelum return OK
