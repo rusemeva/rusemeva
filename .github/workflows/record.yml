@@ -54,7 +54,7 @@ jobs:
             echo "duration_label=${{ github.event.client_payload.duration_label }}" >> $GITHUB_OUTPUT
             echo "referer=${{ github.event.client_payload.referer }}" >> $GITHUB_OUTPUT
             echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
-            echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '26' }}" >> $GITHUB_OUTPUT
+            echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
             echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
           else
             echo "m3u8_url=${{ inputs.m3u8_url }}" >> $GITHUB_OUTPUT
@@ -456,7 +456,7 @@ jobs:
           DURATION: ${{ steps.inputs.outputs.duration }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           HEVC_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
-          HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '26' }}
+          HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
           ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
         run: |
           set -e
@@ -634,6 +634,6 @@ jobs:
           ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
           PHASE: original
           HEVC_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
-          HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '26' }}
+          HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
 
         run: python3 scripts/notify.py

@@ -34,7 +34,7 @@ jobs:
           echo "duration=${{ github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
           echo "release_tag=${{ github.event.client_payload.release_tag }}" >> $GITHUB_OUTPUT
           echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
-          echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '26' }}" >> $GITHUB_OUTPUT
+          echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
           echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
 
       # === Link run_id -> orv_id ke KV (biar /status bisa baca % encode) ===
@@ -341,7 +341,7 @@ jobs:
           HEVC_FILE="${FILE%.mp4}-h265-10bit.mp4"
           FFMPEG_STATIC="${{ env.FFMPEG_STATIC }}"
           HEVC_PRESET="${{ steps.autodg.outputs.FINAL_PRESET || 'veryfast' }}"
-          HEVC_CRF="${{ steps.autodg.outputs.FINAL_CRF || '26' }}"
+          HEVC_CRF="${{ steps.autodg.outputs.FINAL_CRF || '24' }}"
           CHOSEN="${{ steps.inputs.outputs.hevc_preset || 'balanced' }}"
           if [ "$CHOSEN" != "$HEVC_PRESET" ]; then
             MSG="🔻 <b>Auto-downgrade!</b> Preset <code>$CHOSEN</code> estimasi &gt;5j50m, otomatis turun ke <code>$HEVC_PRESET</code> (CRF $HEVC_CRF) biar muat 6 jam."
@@ -388,12 +388,12 @@ jobs:
             # === AUTO BITRATE/SIZE GUARD ===
             # Target: HEVC harus lebih kecil dari original (kayak run 18 Jul: 2.2→1.4 Mbps).
             # Kalau masih >= original, naikkan CRF bertahap (lebih longgar) lalu re-encode.
-            # Batas max CRF 30 biar kualitas tetap oke (tidak jelek parah).
+            # Batas max CRF 28 biar kualitas tetap oke (tidak jelek parah).
             # Target hemat: HEVC <= 90% original (margin kecil biar "turun beneran").
             ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || wc -c < "$FILE")
             TARGET_BYTES=$(awk "BEGIN{printf \"%d\", $ORIG_BYTES * 0.90}")
             CUR_CRF="$HEVC_CRF"
-            MAX_CRF=30
+            MAX_CRF=28
             try=0
             while true; do
               HEVC_BYTES=$(stat -c%s "$HEVC_FILE" 2>/dev/null || wc -c < "$HEVC_FILE")
@@ -442,6 +442,47 @@ jobs:
               fi
             done
             echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
+
+            # === MIN BITRATE FLOOR (~1.2 Mbps) ===
+            # User feedback: 1.0 Mbps @720p terlalu buram; sweet spot ~1.3 Mbps.
+            # Kalau hasil < 1.2 Mbps dan CRF masih bisa diturunkan (>=22), re-encode 1x CRF-2.
+            MIN_BPS=1200000
+            HBR_NOW=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
+            case "$HBR_NOW" in ''|*[!0-9]*) HBR_NOW=0 ;; esac
+            if [ "$HBR_NOW" -gt 0 ] && [ "$HBR_NOW" -lt "$MIN_BPS" ]; then
+              FLOOR_CRF=$((CUR_CRF - 2))
+              if [ "$FLOOR_CRF" -lt 22 ]; then FLOOR_CRF=22; fi
+              if [ "$FLOOR_CRF" -lt "$CUR_CRF" ]; then
+                echo "🪞 Bitrate rendah (${HBR_NOW} bps < ${MIN_BPS}) — naik kualitas CRF $CUR_CRF → $FLOOR_CRF (target ~1.3 Mbps)"
+                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+                  "🪞 <b>Auto-quality:</b> bitrate terlalu rendah (&lt;1.2 Mbps). Re-encode CRF <code>$CUR_CRF</code> → <code>$FLOOR_CRF</code> biar tidak buram." || true
+                CUR_CRF=$FLOOR_CRF
+                HEVC_CRF=$CUR_CRF
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py start || true
+                LAST_PCT=-1
+                "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
+                  -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
+                  -crf ${CUR_CRF} -preset ${HEVC_PRESET} -tag:v hvc1 \
+                  -c:a copy -progress pipe:3 "$HEVC_FILE" \
+                  3> >(while IFS='=' read -r k v; do
+                    if [ "$k" = "out_time_ms" ]; then
+                      ms=${v%.*}
+                      [ "$ms" -gt 0 ] 2>/dev/null || continue
+                      cur=$(( ms / 1000000 ))
+                      pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
+                      if [ "$pct" != "$LAST_PCT" ]; then
+                        LAST_PCT=$pct
+                        CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PROGRESS_STATE_FILE=/tmp/orvella_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py progress "$pct" || true
+                      fi
+                    fi
+                  done) \
+                  > "$HEVC_LOG" 2>&1 || true
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/orvella_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py done || true
+                echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
+                HBR_NOW=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
+                echo "🪞 Setelah anti-blur: crf=$CUR_CRF bitrate=${HBR_NOW:-?}"
+              fi
+            fi
 
             echo "HEVC_FILE=$HEVC_FILE" >> $GITHUB_ENV
             echo "HEVC_SIZE=$(ls -lh "$HEVC_FILE" | awk '{print $5}')" >> $GITHUB_ENV
@@ -573,7 +614,7 @@ jobs:
           FILENAME: ${{ steps.inputs.outputs.filename || '' }}
           # Pakai preset FINAL (hasil autodg), bukan preset input mentah
           CUR_PRESET: ${{ steps.autodg.outputs.FINAL_PRESET || steps.inputs.outputs.hevc_preset || 'veryfast' }}
-          CUR_CRF: ${{ steps.autodg.outputs.FINAL_CRF || steps.inputs.outputs.hevc_crf || '26' }}
+          CUR_CRF: ${{ steps.autodg.outputs.FINAL_CRF || steps.inputs.outputs.hevc_crf || '24' }}
           RELEASE_TAG: ${{ steps.inputs.outputs.release_tag || '' }}
           DURATION: ${{ steps.inputs.outputs.duration || '' }}
           HUMAN_DUR: ${{ steps.inputs.outputs.human_duration || '' }}
