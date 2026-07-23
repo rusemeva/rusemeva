@@ -839,20 +839,21 @@ jobs:
             *)        echo "ℹ️ Sudah di preset tercepat ($CUR_PRESET), stop auto-retry."; echo "retried=0" >> $GITHUB_OUTPUT; exit 0 ;;
           esac
           echo "🔁 Auto-retry: $CUR_PRESET -> $NEXT_PRESET (crf $NEXT_CRF) tag=$RELEASE_TAG"
+          # Max 10 client_payload keys (GitHub API hard limit).
+          # Drop auto_retry flag; retry is implied by faster preset from this step.
+          EP="${{ steps.inputs.outputs.encode_profile || '' }}"
           gh api repos/${{ github.repository }}/dispatches \
             -f event_type=encode-request \
             -f "client_payload[filename]=$FILENAME" \
             -f "client_payload[chat_id]=$CHAT_ID" \
             -f "client_payload[release_tag]=$RELEASE_TAG" \
             -f "client_payload[duration]=${ACT_DURATION_SEC:-$DURATION}" \
-            -f "client_payload[actual_duration]=${ACT_DURATION_SEC:-$DURATION}" \
             -f "client_payload[requested_duration]=${REQ_DURATION_SEC:-$DURATION}" \
             -f "client_payload[human_duration]=$HUMAN_DUR" \
             -f "client_payload[hevc_preset]=$NEXT_PRESET" \
             -f "client_payload[hevc_crf]=$NEXT_CRF" \
-            -f "client_payload[encode_profile]=${{ steps.inputs.outputs.encode_profile || '' }}" \
-            -f "client_payload[orv_id]=$ORV_ID" \
-            -f "client_payload[auto_retry]=1" || true
+            -f "client_payload[encode_profile]=$EP" \
+            -f "client_payload[orv_id]=$ORV_ID" || true
           echo "retried=1" >> $GITHUB_OUTPUT
           echo "✅ Auto-retry dispatched ($NEXT_PRESET)."
 
