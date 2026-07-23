@@ -520,6 +520,14 @@ jobs:
           echo "✅ Upload selesai. Trigger encode..."
           # Trigger rusemeva-encode
           # GitHub API: client_payload max 10 properties (HTTP 422 if more).
+          # Runtime guard — never ship >10 keys again
+          set --             "filename" "chat_id" "human_duration" "duration" "requested_duration"             "release_tag" "hevc_preset" "hevc_crf" "encode_profile" "orv_id"
+          PAYLOAD_N=$#
+          echo "client_payload keys: $PAYLOAD_N (max 10)"
+          if [ "$PAYLOAD_N" -gt 10 ]; then
+            echo "FATAL: client_payload has $PAYLOAD_N keys (GitHub max 10)"
+            exit 1
+          fi
           # duration = actual (authoritative). requested_duration kept for diminta/didapat.
           # stop_reason stays in GITHUB_ENV/vault only (not needed by encode).
           gh api repos/${{ github.repository }}/dispatches \

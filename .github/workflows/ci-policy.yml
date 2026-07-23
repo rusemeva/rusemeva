@@ -1,0 +1,23 @@
+name: ci-policy
+# Blocks merges that reintroduce dispatch/expression/size bugs.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/**'
+      - 'src/index.js'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/**'
+      - 'src/index.js'
+  workflow_dispatch:
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run GHA / encode policy guards
+        run: bash scripts/assert_gha_guards.sh
