@@ -519,15 +519,16 @@ jobs:
           fi
           echo "✅ Upload selesai. Trigger encode..."
           # Trigger rusemeva-encode
+          # GitHub API: client_payload max 10 properties (HTTP 422 if more).
+          # duration = actual (authoritative). requested_duration kept for diminta/didapat.
+          # stop_reason stays in GITHUB_ENV/vault only (not needed by encode).
           gh api repos/${{ github.repository }}/dispatches \
             -f event_type=encode-request \
             -f "client_payload[filename]=${FILE}" \
             -f "client_payload[chat_id]=${CHAT_ID}" \
             -f "client_payload[human_duration]=${HUMAN_DUR}" \
             -f "client_payload[duration]=${ACTUAL_DURATION_SEC:-$DURATION}" \
-            -f "client_payload[actual_duration]=${ACTUAL_DURATION_SEC:-$DURATION}" \
             -f "client_payload[requested_duration]=${REQUESTED_DURATION_SEC:-$DURATION}" \
-            -f "client_payload[stop_reason]=${STOP_REASON:-}" \
             -f "client_payload[release_tag]=${TAG}" \
             -f "client_payload[hevc_preset]=${HEVC_PRESET}" \
             -f "client_payload[hevc_crf]=${HEVC_CRF}" \
