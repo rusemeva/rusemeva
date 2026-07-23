@@ -13,6 +13,40 @@ permissions:
 on:
   repository_dispatch:
     types: [encode-request]
+  workflow_dispatch:
+    inputs:
+      filename:
+        description: 'Original filename in temp release'
+        required: true
+      chat_id:
+        description: 'Telegram chat id'
+        required: true
+      release_tag:
+        description: 'Temp release tag rusemeva-encode-*'
+        required: true
+      duration:
+        description: 'Actual duration seconds'
+        required: true
+      requested_duration:
+        description: 'Requested duration seconds'
+        required: false
+        default: ''
+      human_duration:
+        description: 'Human duration label'
+        required: false
+        default: 'n/a'
+      hevc_preset:
+        required: false
+        default: 'ultrafast'
+      hevc_crf:
+        required: false
+        default: '25'
+      encode_profile:
+        required: false
+        default: 'speed'
+      orv_id:
+        required: false
+        default: ''
 
 jobs:
   encode:
@@ -27,19 +61,35 @@ jobs:
       - name: Get inputs
         id: inputs
         run: |
-          echo "file_id=${{ github.event.client_payload.file_id }}" >> $GITHUB_OUTPUT
-          echo "filename=${{ github.event.client_payload.filename }}" >> $GITHUB_OUTPUT
-          echo "chat_id=${{ github.event.client_payload.chat_id }}" >> $GITHUB_OUTPUT
-          echo "human_duration=${{ github.event.client_payload.human_duration }}" >> $GITHUB_OUTPUT
-          echo "duration=${{ github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
-          echo "actual_duration=${{ github.event.client_payload.actual_duration || github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
-          echo "requested_duration=${{ github.event.client_payload.requested_duration || github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
-          echo "stop_reason=${{ github.event.client_payload.stop_reason || '' }}" >> $GITHUB_OUTPUT
-          echo "release_tag=${{ github.event.client_payload.release_tag }}" >> $GITHUB_OUTPUT
-          echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
-          echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
-          echo "encode_profile=${{ github.event.client_payload.encode_profile || '' }}" >> $GITHUB_OUTPUT
-          echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "filename=${{ inputs.filename }}" >> $GITHUB_OUTPUT
+            echo "chat_id=${{ inputs.chat_id }}" >> $GITHUB_OUTPUT
+            echo "human_duration=${{ inputs.human_duration }}" >> $GITHUB_OUTPUT
+            echo "duration=${{ inputs.duration }}" >> $GITHUB_OUTPUT
+            echo "actual_duration=${{ inputs.duration }}" >> $GITHUB_OUTPUT
+            echo "requested_duration=${{ inputs.requested_duration || inputs.duration }}" >> $GITHUB_OUTPUT
+            echo "stop_reason=" >> $GITHUB_OUTPUT
+            echo "release_tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+            echo "hevc_preset=${{ inputs.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
+            echo "hevc_crf=${{ inputs.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
+            echo "encode_profile=${{ inputs.encode_profile || '' }}" >> $GITHUB_OUTPUT
+            echo "orv_id=${{ inputs.orv_id || '' }}" >> $GITHUB_OUTPUT
+            echo "file_id=" >> $GITHUB_OUTPUT
+          else
+            echo "file_id=${{ github.event.client_payload.file_id }}" >> $GITHUB_OUTPUT
+            echo "filename=${{ github.event.client_payload.filename }}" >> $GITHUB_OUTPUT
+            echo "chat_id=${{ github.event.client_payload.chat_id }}" >> $GITHUB_OUTPUT
+            echo "human_duration=${{ github.event.client_payload.human_duration }}" >> $GITHUB_OUTPUT
+            echo "duration=${{ github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
+            echo "actual_duration=${{ github.event.client_payload.actual_duration || github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
+            echo "requested_duration=${{ github.event.client_payload.requested_duration || github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
+            echo "stop_reason=${{ github.event.client_payload.stop_reason || '' }}" >> $GITHUB_OUTPUT
+            echo "release_tag=${{ github.event.client_payload.release_tag }}" >> $GITHUB_OUTPUT
+            echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
+            echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
+            echo "encode_profile=${{ github.event.client_payload.encode_profile || '' }}" >> $GITHUB_OUTPUT
+            echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
+          fi
 
       # === Link run_id -> orv_id ke KV (biar /status bisa baca % encode) ===
       - name: Link run ke RSM-ID (KV)
