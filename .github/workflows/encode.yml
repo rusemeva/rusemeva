@@ -164,10 +164,18 @@ jobs:
           # 2) Hitung realtime_x = fps_encode / fps_video_asli.
           # 3) Cascade: pilih preset TERTINGGI (paling lambat) yg est <= 350m.
           ORIG="${{ steps.dl.outputs.ORIG_FILE }}"
-          PRESET="${{ steps.inputs.outputs.hevc_preset || 'medium' }}"
-          CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '22' }}"
-          DUR="${{ steps.inputs.outputs.duration }}"
-          [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
+          PRESET="${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}"
+          CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '24' }}"
+          DUR="${{ steps.inputs.outputs.actual_duration || steps.inputs.outputs.duration }}"
+          [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=0
+          # Prefer real file duration for time estimate
+          if [ -s "$ORIG" ]; then
+            PD=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$ORIG" 2>/dev/null | head -1)
+            PD=${PD%.*}
+            case "$PD" in ''|*[!0-9]*) PD=0 ;; esac
+            if [ "$PD" -gt 0 ]; then DUR=$PD; fi
+          fi
+          [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
           LIMIT_MIN=350
           OVERHEAD_MIN=15
           FFMPEG_STATIC="${{ env.FFMPEG_STATIC }}"
@@ -561,9 +569,21 @@ jobs:
             CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py "❌ <b>Encode gagal</b> — output HEVC kosong (ffmpeg rc=$ENC_RC)." || true
             exit 1
           fi
+          # Reject truncated encode (ffmpeg can leave short file with rc!=0 or rc=0 race)
+          OUT_DUR=$(probe_duration_int "$HEVC_FILE" || echo 0)
+          MIN_OUT=$(( SRC_DUR_INT * 90 / 100 ))
+          [ "$MIN_OUT" -lt 1 ] && MIN_OUT=1
+          if [ "${OUT_DUR:-0}" -gt 0 ] && [ "$SRC_DUR_INT" -ge 30 ] && [ "$OUT_DUR" -lt "$MIN_OUT" ]; then
+            echo "❌ HEVC truncated: out=${OUT_DUR}s < 90% of src=${SRC_DUR_INT}s (rc=$ENC_RC)"
+            CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py               "❌ <b>Encode truncated</b> — HEVC ${OUT_DUR}s &lt; 90% sumber ${SRC_DUR_INT}s (rc=$ENC_RC)." || true
+            exit 1
+          fi
+          if [ "${ENC_RC:-0}" -ne 0 ]; then
+            echo "⚠️ ffmpeg rc=$ENC_RC but output looks complete (dur=${OUT_DUR}s) — continue with guard"
+          fi
 
           if [ -s "$HEVC_FILE" ]; then
-            echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}')"
+            echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}') out_dur=${OUT_DUR:-?}s"
 
             # === AUTO BITRATE/SIZE GUARD (strict) ===
             # Accept only if bitrate known AND (bps <= ACCEPT) AND size reasonable.
@@ -740,15 +760,17 @@ jobs:
       - name: Split HEVC kalau >2GB (biar bisa dikirim Telegram)
         if: always()
         continue-on-error: true
+        env:
+          HEVC_FILE: ${{ env.HEVC_FILE }}
         run: |
-          if [ -n "$HEVC_FILE" ] && [ -s "$HEVC_FILE" ]; then
+          if [ -n "${HEVC_FILE:-}" ] && [ -s "$HEVC_FILE" ]; then
             SIZE=$(stat -c%s "$HEVC_FILE" 2>/dev/null || echo 0)
             MAX=$((2*1024*1024*1024))
             if [ "$SIZE" -gt "$MAX" ]; then
               echo "📦 HEVC $((SIZE/1024/1024/1024)) GB > 2GB -> split -b 1990M"
               # Format part-000 (sama kayak record.yml yg terbukti jalan)
               split -b 1990M --numeric-suffixes=0 --suffix-length=3 "$HEVC_FILE" "${HEVC_FILE}.part-"
-              # Hapus file asli biar notify gak kirim utuh
+
               rm -f "$HEVC_FILE"
               echo "HEVC_SPLIT=1" >> $GITHUB_ENV
               ls -lh "${HEVC_FILE}.part"* 2>/dev/null || true
@@ -798,6 +820,8 @@ jobs:
           RELEASE_TAG: ${{ steps.inputs.outputs.release_tag || '' }}
           DURATION: ${{ steps.inputs.outputs.duration || '' }}
           HUMAN_DUR: ${{ steps.inputs.outputs.human_duration || '' }}
+          ACT_DURATION_SEC: ${{ env.ACT_DURATION_SEC || steps.inputs.outputs.actual_duration || steps.inputs.outputs.duration || '' }}
+          REQ_DURATION_SEC: ${{ env.REQ_DURATION_SEC || steps.inputs.outputs.requested_duration || steps.inputs.outputs.duration || '' }}
         run: |
           # Hanya retry kalau masih ada release temp (sumber original)
           if [ -z "$RELEASE_TAG" ]; then

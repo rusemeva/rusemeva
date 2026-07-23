@@ -511,7 +511,7 @@ async function handleRecord(text, chatId, env, ctx) {
   const wib = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
   const pad = n => String(n).padStart(2, '0');
   const ts = `${wib.getFullYear()}-${pad(wib.getMonth()+1)}-${pad(wib.getDate())}T${pad(wib.getHours())}-${pad(wib.getMinutes())}-${pad(wib.getSeconds())}`;
-  const filename = `recording-${ts}-${formatDurationShort(duration)}.mp4`;
+  const filename = `Rusemeva-Asset-${ts.replace('T', '_')}-${formatDurationShort(duration)}.mp4`;
 
   // === #4 ESTIMASI SEBELUM REKAM: hitung & tampilkan di notif mulai ===
   const recSec = duration;
