@@ -22,7 +22,7 @@ on:
         description: 'Telegram chat id'
         required: true
       release_tag:
-        description: 'Temp release tag rusemeva-encode-*'
+        description: 'Temp release tag'
         required: true
       duration:
         description: 'Actual duration seconds'
@@ -62,28 +62,24 @@ jobs:
         id: inputs
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "file_id=" >> $GITHUB_OUTPUT
             echo "filename=${{ inputs.filename }}" >> $GITHUB_OUTPUT
             echo "chat_id=${{ inputs.chat_id }}" >> $GITHUB_OUTPUT
             echo "human_duration=${{ inputs.human_duration }}" >> $GITHUB_OUTPUT
             echo "duration=${{ inputs.duration }}" >> $GITHUB_OUTPUT
-            echo "actual_duration=${{ inputs.duration }}" >> $GITHUB_OUTPUT
             echo "requested_duration=${{ inputs.requested_duration || inputs.duration }}" >> $GITHUB_OUTPUT
-            echo "stop_reason=" >> $GITHUB_OUTPUT
             echo "release_tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
             echo "hevc_preset=${{ inputs.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
             echo "hevc_crf=${{ inputs.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
             echo "encode_profile=${{ inputs.encode_profile || '' }}" >> $GITHUB_OUTPUT
             echo "orv_id=${{ inputs.orv_id || '' }}" >> $GITHUB_OUTPUT
-            echo "file_id=" >> $GITHUB_OUTPUT
           else
             echo "file_id=${{ github.event.client_payload.file_id }}" >> $GITHUB_OUTPUT
             echo "filename=${{ github.event.client_payload.filename }}" >> $GITHUB_OUTPUT
             echo "chat_id=${{ github.event.client_payload.chat_id }}" >> $GITHUB_OUTPUT
             echo "human_duration=${{ github.event.client_payload.human_duration }}" >> $GITHUB_OUTPUT
             echo "duration=${{ github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
-            echo "actual_duration=${{ github.event.client_payload.actual_duration || github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
             echo "requested_duration=${{ github.event.client_payload.requested_duration || github.event.client_payload.duration }}" >> $GITHUB_OUTPUT
-            echo "stop_reason=${{ github.event.client_payload.stop_reason || '' }}" >> $GITHUB_OUTPUT
             echo "release_tag=${{ github.event.client_payload.release_tag }}" >> $GITHUB_OUTPUT
             echo "hevc_preset=${{ github.event.client_payload.hevc_preset || 'veryfast' }}" >> $GITHUB_OUTPUT
             echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
@@ -214,18 +210,10 @@ jobs:
           # 2) Hitung realtime_x = fps_encode / fps_video_asli.
           # 3) Cascade: pilih preset TERTINGGI (paling lambat) yg est <= 350m.
           ORIG="${{ steps.dl.outputs.ORIG_FILE }}"
-          PRESET="${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}"
-          CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '24' }}"
-          DUR="${{ steps.inputs.outputs.actual_duration || steps.inputs.outputs.duration }}"
-          [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=0
-          # Prefer real file duration for time estimate
-          if [ -s "$ORIG" ]; then
-            PD=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$ORIG" 2>/dev/null | head -1)
-            PD=${PD%.*}
-            case "$PD" in ''|*[!0-9]*) PD=0 ;; esac
-            if [ "$PD" -gt 0 ]; then DUR=$PD; fi
-          fi
-          [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
+          PRESET="${{ steps.inputs.outputs.hevc_preset || 'medium' }}"
+          CRF_VAL="${{ steps.inputs.outputs.hevc_crf || '22' }}"
+          DUR="${{ steps.inputs.outputs.duration }}"
+          [ -z "$DUR" ] || [ "$DUR" -le 0 ] 2>/dev/null && DUR=3600
           LIMIT_MIN=350
           OVERHEAD_MIN=15
           FFMPEG_STATIC="${{ env.FFMPEG_STATIC }}"
@@ -416,10 +404,8 @@ jobs:
 
           source scripts/encode_policy.sh
           REQ_DUR="${{ steps.inputs.outputs.requested_duration || steps.inputs.outputs.duration }}"
-          ACT_DUR="${{ steps.inputs.outputs.actual_duration || '' }}"
-          SRC_DUR_INT="$ACT_DUR"
+          SRC_DUR_INT="${{ steps.inputs.outputs.duration }}"
           case "$SRC_DUR_INT" in ''|*[!0-9]*) SRC_DUR_INT=0 ;; esac
-          # Prefer ffprobe file duration (authoritative)
           REAL_SRC_INT=$(probe_duration_int "$FILE" || true)
           if [ "${REAL_SRC_INT:-0}" -gt 0 ] 2>/dev/null; then
             SRC_DUR_INT=$REAL_SRC_INT
@@ -427,11 +413,10 @@ jobs:
             case "$REQ_DUR" in ''|*[!0-9]*) SRC_DUR_INT=60 ;; *) SRC_DUR_INT=$REQ_DUR ;; esac
             [ "$SRC_DUR_INT" -le 0 ] 2>/dev/null && SRC_DUR_INT=60
           fi
-          echo "⏱ duration: actual_file=${REAL_SRC_INT:-?} payload_actual=${ACT_DUR:-?} requested=${REQ_DUR:-?} using=${SRC_DUR_INT}s"
           AUDIO_BPS=$(probe_audio_bps "$FILE" || echo 0)
           MAXRATE_K=$(video_maxrate_k "$AUDIO_BPS")
           BUFSIZE_K=$(( MAXRATE_K * 2 ))
-          echo "🎚 rate: audio_bps=${AUDIO_BPS} video_maxrate=${MAXRATE_K}k bufsize=${BUFSIZE_K}k"
+          echo "dur=${SRC_DUR_INT}s audio=${AUDIO_BPS} maxrate=${MAXRATE_K}k"
 
           # === SCENE-AWARE CRF ===
           # Probe 5 cuplikan @8s: encode mini ultrafast di CRF basis, ukur bytes/s.
@@ -451,7 +436,7 @@ jobs:
               [ "$SS" -gt "$MAX_SS" ] && SS=$MAX_SS
               [ "$SS" -lt 0 ] && SS=0
               SAMPLE="/tmp/rusemeva_scene_${frac}.mp4"
-              timeout 25 "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -t 8 -i "$FILE" \
+              "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -t 8 -i "$FILE" \
                 -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
                 -crf ${BASE_CRF} -preset ultrafast -an "$SAMPLE" >/tmp/rusemeva_scene_probe.log 2>&1 || true
               if [ -s "$SAMPLE" ]; then
@@ -513,24 +498,22 @@ jobs:
             # Kalau sudut jauh lebih stabil → kemungkinan logo/ticker TV.
             if [ "${SRC_DUR_INT:-0}" -ge 120 ] 2>/dev/null; then
               echo "📺 Live-detect: cek chrome statis (logo/ticker)..."
-              LIVE_DETECT_START=$SECONDS
               CORNER_DIFF=0
               CENTER_DIFF=0
               N_PAIR=0
               PREV_C=""
               PREV_M=""
               for frac in 15 35 55 75 90; do
-                if [ $(( SECONDS - LIVE_DETECT_START )) -gt 90 ]; then echo "📺 Live-detect timeout budget"; break; fi
                 SS=$(( SRC_DUR_INT * frac / 100 ))
                 MAX_SS=$(( SRC_DUR_INT - 2 ))
                 [ "$SS" -gt "$MAX_SS" ] && SS=$MAX_SS
                 FC="/tmp/rusemeva_live_c_${frac}.png"
                 FM="/tmp/rusemeva_live_m_${frac}.png"
                 # sudut kiri-atas 12%
-                timeout 15 "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -i "$FILE" -vframes 1 \
+                "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -i "$FILE" -vframes 1 \
                   -vf "crop=iw*0.12:ih*0.12:0:0,scale=64:64,format=gray" "$FC" >/dev/null 2>&1 || true
                 # tengah 30%
-                timeout 15 "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -i "$FILE" -vframes 1 \
+                "$FFMPEG_STATIC" -hide_banner -y -ss "$SS" -i "$FILE" -vframes 1 \
                   -vf "crop=iw*0.30:ih*0.30:(iw-ow)/2:(ih-oh)/2,scale=64:64,format=gray" "$FM" >/dev/null 2>&1 || true
                 if [ -n "$PREV_C" ] && [ -s "$FC" ] && [ -s "$PREV_C" ]; then
                   # mean abs diff via ffmpeg psnr (lower=more similar/static)
@@ -587,13 +570,10 @@ jobs:
           if [ -n "${VF_LIVE:-}" ]; then
             LIVE_VF_ARGS=(-vf "$VF_LIVE")
           fi
-          # Plafon bitrate (MAXRATE_K dari encode_policy / audio-aware)
-          MAXRATE_K=${MAXRATE_K:-1450}
-          BUFSIZE_K=${BUFSIZE_K:-$(( MAXRATE_K * 2 ))}
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             "${LIVE_VF_ARGS[@]}" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-            -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -maxrate ${MAXRATE_K}k -bufsize ${BUFSIZE_K}k \
+            -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -maxrate ${MAXRATE_K:-1450}k -bufsize ${BUFSIZE_K:-2900}k \
             -x265-params "${X265_PARAMS}" -tag:v hvc1 \
             -c:a copy -progress pipe:3 "$HEVC_FILE" \
             3> >(while IFS='=' read -r k v; do
@@ -610,100 +590,54 @@ jobs:
               fi
             done) \
             > "$HEVC_LOG" 2>&1
-          ENC_RC=$?
-          echo "🔄 HEVC encode 100% (ffmpeg_rc=$ENC_RC)"
+          echo "🔄 HEVC encode 100%"
           CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id python3 scripts/progress.py done || true
-          if [ ! -s "$HEVC_FILE" ]; then
-            echo "❌ HEVC output missing/empty rc=$ENC_RC"
-            tail -n 40 "$HEVC_LOG" 2>/dev/null || true
-            CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py "❌ <b>Encode gagal</b> — output HEVC kosong (ffmpeg rc=$ENC_RC)." || true
-            exit 1
-          fi
-          # Reject truncated encode (ffmpeg can leave short file with rc!=0 or rc=0 race)
-          OUT_DUR=$(probe_duration_int "$HEVC_FILE" || echo 0)
-          MIN_OUT=$(( SRC_DUR_INT * 90 / 100 ))
-          [ "$MIN_OUT" -lt 1 ] && MIN_OUT=1
-          if [ "${OUT_DUR:-0}" -gt 0 ] && [ "$SRC_DUR_INT" -ge 30 ] && [ "$OUT_DUR" -lt "$MIN_OUT" ]; then
-            echo "❌ HEVC truncated: out=${OUT_DUR}s < 90% of src=${SRC_DUR_INT}s (rc=$ENC_RC)"
-            CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py               "❌ <b>Encode truncated</b> — HEVC ${OUT_DUR}s &lt; 90% sumber ${SRC_DUR_INT}s (rc=$ENC_RC)." || true
-            exit 1
-          fi
-          if [ "${ENC_RC:-0}" -ne 0 ]; then
-            echo "⚠️ ffmpeg rc=$ENC_RC but output looks complete (dur=${OUT_DUR}s) — continue with guard"
-          fi
 
           if [ -s "$HEVC_FILE" ]; then
-            echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}') out_dur=${OUT_DUR:-?}s"
+            echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}')"
 
-            # === AUTO BITRATE/SIZE GUARD (strict) ===
-            # Accept only if bitrate known AND (bps <= ACCEPT) AND size reasonable.
-            # Anti-blur (CRF-2) re-enters the same loop. Never accept HBR=0 as OK.
+            # === AUTO BITRATE/SIZE GUARD ===
+            # Target: HEVC harus lebih kecil dari original (kayak run 18 Jul: 2.2→1.4 Mbps).
+            # Kalau masih >= original, naikkan CRF bertahap (lebih longgar) lalu re-encode.
+            # Batas max CRF 28 biar kualitas tetap oke (tidak jelek parah).
+            # Target hemat: HEVC <= 90% original (margin kecil biar "turun beneran").
             ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || wc -c < "$FILE")
-            TARGET_BYTES=$(target_bytes "$SRC_DUR_INT" "$ORIG_BYTES" || echo 0)
-            if [ "${TARGET_BYTES:-0}" -le 0 ]; then
-              echo "❌ target_bytes invalid dur=$SRC_DUR_INT orig=$ORIG_BYTES"
-              exit 1
-            fi
-            TARGET_WHY="min(90%orig, ${MAX_TOTAL_BPS}bps*dur/8) => ${TARGET_BYTES}B"
-            echo "🎯 Size target: $TARGET_BYTES bytes ($TARGET_WHY) | orig=$ORIG_BYTES dur=${SRC_DUR_INT}s audio=${AUDIO_BPS}"
+            TARGET_BYTES=$(target_bytes "$SRC_DUR_INT" "$ORIG_BYTES" || awk "BEGIN{printf \"%d\", $ORIG_BYTES * 0.90}")
             CUR_CRF="$HEVC_CRF"
+            MAX_CRF=28
             try=0
             while true; do
               HEVC_BYTES=$(stat -c%s "$HEVC_FILE" 2>/dev/null || wc -c < "$HEVC_FILE")
+              echo "📏 size: orig=${ORIG_BYTES} hevc=${HEVC_BYTES} target<=${TARGET_BYTES} (crf=${CUR_CRF})"
               HBR_CHK=$(probe_bitrate "$HEVC_FILE" || true)
-              if [ -z "$HBR_CHK" ]; then
-                echo "⚠️ ffprobe bitrate empty — retry probe once"
-                sleep 1
-                HBR_CHK=$(probe_bitrate "$HEVC_FILE" || true)
+              if [ -n "$HBR_CHK" ] && [ "$HBR_CHK" -le 1500000 ]; then
+                if [ "$HEVC_BYTES" -le "$TARGET_BYTES" ] || [ "$HBR_CHK" -le 1450000 ]; then
+                  echo "Size/bitrate OK crf=$CUR_CRF bps=$HBR_CHK"
+                  break
+                fi
               fi
-              DECISION=$(accept_hevc "$HEVC_BYTES" "$TARGET_BYTES" "$HBR_CHK")
-              echo "📏 size: orig=${ORIG_BYTES} hevc=${HEVC_BYTES} target<=${TARGET_BYTES} bps=${HBR_CHK:-?} decision=${DECISION} (crf=${CUR_CRF})"
-              if [ "$DECISION" = "OK" ]; then
-                echo "✅ Size/bitrate OK di CRF $CUR_CRF (bps=${HBR_CHK})"
+              if [ -z "$HBR_CHK" ]; then
+                echo "bitrate unknown - fail"; exit 1
+              fi
+              NEXT_CRF=$((CUR_CRF + 2))
+              if [ "$NEXT_CRF" -gt "$MAX_CRF" ]; then
+                echo "⚠️ Masih besar di CRF $CUR_CRF, tapi sudah cap $MAX_CRF — stop biar kualitas tidak jelek."
+                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+                  "⚠️ <b>Auto-size:</b> HEVC masih besar di CRF $CUR_CRF (cap $MAX_CRF). Kualitas dipertahankan, size tidak dipaksa lebih kecil." || true
                 break
               fi
-              if [ "$DECISION" = "UNKNOWN" ]; then
-                echo "❌ Bitrate UNKNOWN — tidak bisa terima file"
-                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                  "❌ <b>Auto-size:</b> gagal baca bitrate HEVC (ffprobe). Encode dihentikan." || true
-                exit 1
-              fi
-              if [ "$DECISION" = "NEED_BETTER" ]; then
-                NEXT_CRF=$((CUR_CRF - 2))
-                [ "$NEXT_CRF" -lt "$MIN_CRF" ] && NEXT_CRF=$MIN_CRF
-                if [ "$NEXT_CRF" -ge "$CUR_CRF" ]; then
-                  echo "🪞 Sudah di CRF min $MIN_CRF — stop anti-blur"
-                  CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                    "🪞 <b>Auto-quality:</b> bitrate &lt;1.2 Mbps tapi CRF sudah min ${MIN_CRF}." || true
-                  break
-                fi
-                PHASE_NOTE="anti-blur"
-                echo "🪞 Bitrate rendah (${HBR_CHK} &lt; ${MIN_TOTAL_BPS}) CRF $CUR_CRF → $NEXT_CRF"
-                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                  "🪞 <b>Auto-quality:</b> bitrate terlalu rendah. Re-encode CRF <code>$CUR_CRF</code> → <code>$NEXT_CRF</code>." || true
-              else
-                # NEED_SMALLER
-                NEXT_CRF=$((CUR_CRF + 2))
-                if [ "$NEXT_CRF" -gt "$MAX_CRF" ]; then
-                  echo "⚠️ Masih besar di CRF $CUR_CRF, cap $MAX_CRF"
-                  CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                    "⚠️ <b>Auto-size:</b> HEVC masih besar di CRF $CUR_CRF (cap $MAX_CRF). bps=${HBR_CHK:-?} target=${TARGET_BYTES}B." || true
-                  break
-                fi
-                PHASE_NOTE="auto-size"
-                try=$((try + 1))
-                echo "🔻 Auto-size try#$try: CRF $CUR_CRF → $NEXT_CRF (bps=${HBR_CHK:-?} target=$TARGET_BYTES)"
-                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                  "🔻 <b>Auto-size:</b> HEVC gendut, re-encode CRF <code>$CUR_CRF</code> → <code>$NEXT_CRF</code> (target ~1.45 Mbps)." || true
-              fi
+              try=$((try + 1))
+              echo "🔻 Auto-size try#$try: CRF $CUR_CRF → $NEXT_CRF (HEVC masih >= 90% original)"
+              CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+                "🔻 <b>Auto-size:</b> file HEVC masih besar, re-encode CRF <code>$CUR_CRF</code> → <code>$NEXT_CRF</code> (target &lt; original, max CRF $MAX_CRF)." || true
               CUR_CRF=$NEXT_CRF
               HEVC_CRF=$CUR_CRF
-              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF ($PHASE_NOTE)" python3 scripts/progress.py start || true
+              # re-encode (progress bar reset ringan)
+              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py start || true
               LAST_PCT=-1
               "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
-                "${LIVE_VF_ARGS[@]}" \
                 -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-                -crf ${CUR_CRF} -preset ${HEVC_PRESET} -maxrate ${MAXRATE_K}k -bufsize ${BUFSIZE_K}k \
+                -crf ${CUR_CRF} -preset ${HEVC_PRESET} -maxrate ${MAXRATE_K:-1450}k -bufsize ${BUFSIZE_K:-2900}k \
                 -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
                 -c:a copy -progress pipe:3 "$HEVC_FILE" \
                 3> >(while IFS='=' read -r k v; do
@@ -714,25 +648,59 @@ jobs:
                     pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
                     if [ "$pct" != "$LAST_PCT" ]; then
                       LAST_PCT=$pct
-                      CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF ($PHASE_NOTE)" python3 scripts/progress.py progress "$pct" || true
+                      CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py progress "$pct" || true
                     fi
                   fi
                 done) \
-                > "$HEVC_LOG" 2>&1
-              RE_RC=$?
-              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF ($PHASE_NOTE)" python3 scripts/progress.py done || true
-              if [ ! -s "$HEVC_FILE" ] || [ "${RE_RC:-0}" -ne 0 ]; then
-                echo "❌ Re-encode CRF $CUR_CRF gagal rc=$RE_RC"
-                tail -n 30 "$HEVC_LOG" 2>/dev/null || true
-                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                  "❌ <b>Re-encode gagal</b> CRF $CUR_CRF (rc=$RE_RC)." || true
-                exit 1
+                > "$HEVC_LOG" 2>&1 || true
+              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py done || true
+              if [ ! -s "$HEVC_FILE" ]; then
+                echo "❌ Re-encode CRF $CUR_CRF gagal menghasilkan file"
+                break
               fi
             done
             echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
-            echo "HEVC_TARGET_BYTES=$TARGET_BYTES" >> $GITHUB_ENV
-            echo "REQ_DURATION_SEC=${REQ_DUR:-}" >> $GITHUB_ENV
-            echo "ACT_DURATION_SEC=$SRC_DUR_INT" >> $GITHUB_ENV
+
+            # === MIN BITRATE FLOOR (~1.2 Mbps) ===
+            # User feedback: 1.0 Mbps @720p terlalu buram; sweet spot ~1.3 Mbps.
+            # Kalau hasil < 1.2 Mbps dan CRF masih bisa diturunkan (>=22), re-encode 1x CRF-2.
+            MIN_BPS=1200000
+            HBR_NOW=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
+            case "$HBR_NOW" in ''|*[!0-9]*) HBR_NOW=0 ;; esac
+            if [ "$HBR_NOW" -gt 0 ] && [ "$HBR_NOW" -lt "$MIN_BPS" ]; then
+              FLOOR_CRF=$((CUR_CRF - 2))
+              if [ "$FLOOR_CRF" -lt 22 ]; then FLOOR_CRF=22; fi
+              if [ "$FLOOR_CRF" -lt "$CUR_CRF" ]; then
+                echo "🪞 Bitrate rendah (${HBR_NOW} bps < ${MIN_BPS}) — naik kualitas CRF $CUR_CRF → $FLOOR_CRF (target ~1.3 Mbps)"
+                CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+                  "🪞 <b>Auto-quality:</b> bitrate terlalu rendah (&lt;1.2 Mbps). Re-encode CRF <code>$CUR_CRF</code> → <code>$FLOOR_CRF</code> biar tidak buram." || true
+                CUR_CRF=$FLOOR_CRF
+                HEVC_CRF=$CUR_CRF
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py start || true
+                LAST_PCT=-1
+                "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
+                  -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
+                  -crf ${CUR_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
+                  -c:a copy -progress pipe:3 "$HEVC_FILE" \
+                  3> >(while IFS='=' read -r k v; do
+                    if [ "$k" = "out_time_ms" ]; then
+                      ms=${v%.*}
+                      [ "$ms" -gt 0 ] 2>/dev/null || continue
+                      cur=$(( ms / 1000000 ))
+                      pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
+                      if [ "$pct" != "$LAST_PCT" ]; then
+                        LAST_PCT=$pct
+                        CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py progress "$pct" || true
+                      fi
+                    fi
+                  done) \
+                  > "$HEVC_LOG" 2>&1 || true
+                CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py done || true
+                echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
+                HBR_NOW=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
+                echo "🪞 Setelah anti-blur: crf=$CUR_CRF bitrate=${HBR_NOW:-?}"
+              fi
+            fi
 
             echo "HEVC_FILE=$HEVC_FILE" >> $GITHUB_ENV
             echo "HEVC_SIZE=$(ls -lh "$HEVC_FILE" | awk '{print $5}')" >> $GITHUB_ENV
@@ -820,7 +788,7 @@ jobs:
               echo "📦 HEVC $((SIZE/1024/1024/1024)) GB > 2GB -> split -b 1990M"
               # Format part-000 (sama kayak record.yml yg terbukti jalan)
               split -b 1990M --numeric-suffixes=0 --suffix-length=3 "$HEVC_FILE" "${HEVC_FILE}.part-"
-
+              # Hapus file asli biar notify gak kirim utuh
               rm -f "$HEVC_FILE"
               echo "HEVC_SPLIT=1" >> $GITHUB_ENV
               ls -lh "${HEVC_FILE}.part"* 2>/dev/null || true
@@ -870,8 +838,6 @@ jobs:
           RELEASE_TAG: ${{ steps.inputs.outputs.release_tag || '' }}
           DURATION: ${{ steps.inputs.outputs.duration || '' }}
           HUMAN_DUR: ${{ steps.inputs.outputs.human_duration || '' }}
-          ACT_DURATION_SEC: ${{ env.ACT_DURATION_SEC || steps.inputs.outputs.actual_duration || steps.inputs.outputs.duration || '' }}
-          REQ_DURATION_SEC: ${{ env.REQ_DURATION_SEC || steps.inputs.outputs.requested_duration || steps.inputs.outputs.duration || '' }}
         run: |
           # Hanya retry kalau masih ada release temp (sumber original)
           if [ -z "$RELEASE_TAG" ]; then
@@ -889,21 +855,18 @@ jobs:
             *)        echo "ℹ️ Sudah di preset tercepat ($CUR_PRESET), stop auto-retry."; echo "retried=0" >> $GITHUB_OUTPUT; exit 0 ;;
           esac
           echo "🔁 Auto-retry: $CUR_PRESET -> $NEXT_PRESET (crf $NEXT_CRF) tag=$RELEASE_TAG"
-          # Max 10 client_payload keys (GitHub API hard limit).
-          # Drop auto_retry flag; retry is implied by faster preset from this step.
-          EP="${{ steps.inputs.outputs.encode_profile || '' }}"
           gh api repos/${{ github.repository }}/dispatches \
             -f event_type=encode-request \
             -f "client_payload[filename]=$FILENAME" \
             -f "client_payload[chat_id]=$CHAT_ID" \
             -f "client_payload[release_tag]=$RELEASE_TAG" \
-            -f "client_payload[duration]=${ACT_DURATION_SEC:-$DURATION}" \
-            -f "client_payload[requested_duration]=${REQ_DURATION_SEC:-$DURATION}" \
+            -f "client_payload[duration]=$DURATION" \
             -f "client_payload[human_duration]=$HUMAN_DUR" \
             -f "client_payload[hevc_preset]=$NEXT_PRESET" \
             -f "client_payload[hevc_crf]=$NEXT_CRF" \
-            -f "client_payload[encode_profile]=$EP" \
-            -f "client_payload[orv_id]=$ORV_ID" || true
+            -f "client_payload[encode_profile]=${{ steps.inputs.outputs.encode_profile || '' }}" \
+            -f "client_payload[orv_id]=$ORV_ID" \
+            -f "client_payload[auto_retry]=1" || true
           echo "retried=1" >> $GITHUB_OUTPUT
           echo "✅ Auto-retry dispatched ($NEXT_PRESET)."
 
