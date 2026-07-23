@@ -67,4 +67,16 @@ if ! grep -q "encode_policy" scripts/run_hevc_encode.sh; then
   echo "FAIL: run_hevc_encode must use encode_policy"; exit 1
 fi
 
+
+echo "== ban misleading ETA / loose size copy =="
+if grep -nE 'totalSec = recSec \+ encSec|Estimasi: rekam' src/index.js 2>/dev/null; then
+  echo "FAIL: fake total ETA pattern in worker"; exit 1
+fi
+if grep -nE 'HEVC <= 90% original|Size OK \(HEVC <= 90%' scripts/run_hevc_encode.sh 2>/dev/null; then
+  echo "FAIL: old 90%-only size success copy in run_hevc_encode"; exit 1
+fi
+if ! grep -q 'accept_hevc' scripts/run_hevc_encode.sh; then
+  echo "FAIL: run_hevc_encode must call accept_hevc"; exit 1
+fi
+
 echo "ALL GHA GUARDS OK"

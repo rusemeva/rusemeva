@@ -211,46 +211,65 @@ CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOK
 if [ -s "$HEVC_FILE" ]; then
   echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}')"
 
-  # === AUTO BITRATE/SIZE GUARD ===
-  # Target: HEVC harus lebih kecil dari original (kayak run 18 Jul: 2.2→1.4 Mbps).
-  # Kalau masih >= original, naikkan CRF bertahap (lebih longgar) lalu re-encode.
-  # Batas max CRF 28 biar kualitas tetap oke (tidak jelek parah).
-  # Target hemat: HEVC <= 90% original (margin kecil biar "turun beneran").
+  # === AUTO BITRATE/SIZE GUARD (strict via encode_policy.sh) ===
+  # Accept only if bitrate known AND in band (~1.2-1.5 Mbps) AND size vs target.
+  # NEED_BETTER (blur) re-enters same loop with CRF-2; no separate pass with || true.
   ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || wc -c < "$FILE")
-  TARGET_BYTES=$(target_bytes "$SRC_DUR_INT" "$ORIG_BYTES" || awk "BEGIN{printf \"%d\", $ORIG_BYTES * 0.90}")
+  TARGET_BYTES=$(target_bytes "$SRC_DUR_INT" "$ORIG_BYTES" || echo 0)
+  if [ "${TARGET_BYTES:-0}" -le 0 ]; then
+    echo "target_bytes invalid dur=$SRC_DUR_INT orig=$ORIG_BYTES"
+    exit 1
+  fi
+  echo "Size target: $TARGET_BYTES bytes | orig=$ORIG_BYTES dur=${SRC_DUR_INT}s maxrate=${MAXRATE_K:-1450}k"
   CUR_CRF="$HEVC_CRF"
-  MAX_CRF=28
   try=0
   while true; do
     HEVC_BYTES=$(stat -c%s "$HEVC_FILE" 2>/dev/null || wc -c < "$HEVC_FILE")
-    echo "📏 size: orig=${ORIG_BYTES} hevc=${HEVC_BYTES} target<=${TARGET_BYTES} (crf=${CUR_CRF})"
     HBR_CHK=$(probe_bitrate "$HEVC_FILE" || true)
-    if [ -n "$HBR_CHK" ] && [ "$HBR_CHK" -le 1500000 ]; then
-      if [ "$HEVC_BYTES" -le "$TARGET_BYTES" ] || [ "$HBR_CHK" -le 1450000 ]; then
-        echo "Size/bitrate OK crf=$CUR_CRF bps=$HBR_CHK"
-        break
-      fi
-    fi
     if [ -z "$HBR_CHK" ]; then
-      echo "bitrate unknown - fail"; exit 1
+      sleep 1
+      HBR_CHK=$(probe_bitrate "$HEVC_FILE" || true)
     fi
-    NEXT_CRF=$((CUR_CRF + 2))
-    if [ "$NEXT_CRF" -gt "$MAX_CRF" ]; then
-      echo "⚠️ Masih besar di CRF $CUR_CRF, tapi sudah cap $MAX_CRF — stop biar kualitas tidak jelek."
-      CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-        "⚠️ <b>Auto-size:</b> HEVC masih besar di CRF $CUR_CRF (cap $MAX_CRF). Kualitas dipertahankan, size tidak dipaksa lebih kecil." || true
+    DECISION=$(accept_hevc "$HEVC_BYTES" "$TARGET_BYTES" "${HBR_CHK:-}")
+    echo "size hevc=${HEVC_BYTES} target<=${TARGET_BYTES} bps=${HBR_CHK:-?} decision=${DECISION} crf=${CUR_CRF}"
+    if [ "$DECISION" = "OK" ]; then
+      echo "Size/bitrate OK crf=$CUR_CRF bps=$HBR_CHK"
       break
     fi
-    try=$((try + 1))
-    echo "🔻 Auto-size try#$try: CRF $CUR_CRF → $NEXT_CRF (HEVC masih >= 90% original)"
-    CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-      "🔻 <b>Auto-size:</b> file HEVC masih besar, re-encode CRF <code>$CUR_CRF</code> → <code>$NEXT_CRF</code> (target &lt; original, max CRF $MAX_CRF)." || true
+    if [ "$DECISION" = "UNKNOWN" ]; then
+      CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+        "Auto-size: gagal baca bitrate HEVC — encode dihentikan." || true
+      exit 1
+    fi
+    if [ "$DECISION" = "NEED_BETTER" ]; then
+      NEXT_CRF=$((CUR_CRF - 2))
+      [ "$NEXT_CRF" -lt "${MIN_CRF:-22}" ] && NEXT_CRF=${MIN_CRF:-22}
+      if [ "$NEXT_CRF" -ge "$CUR_CRF" ]; then
+        echo "Already min CRF ${MIN_CRF:-22} — keep (may be soft)"
+        break
+      fi
+      PHASE_NOTE="anti-blur"
+    else
+      NEXT_CRF=$((CUR_CRF + 2))
+      if [ "$NEXT_CRF" -gt "${MAX_CRF:-28}" ]; then
+        CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+          "Auto-size: still large at CRF $CUR_CRF (cap ${MAX_CRF:-28}) bps=${HBR_CHK:-?}." || true
+        break
+      fi
+      PHASE_NOTE="auto-size"
+      try=$((try + 1))
+    fi
     CUR_CRF=$NEXT_CRF
     HEVC_CRF=$CUR_CRF
-    # re-encode (progress bar reset ringan)
-    CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py start || true
+    CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
+      "Re-encode CRF → <code>$CUR_CRF</code> ($PHASE_NOTE)." || true
+    CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" \
+      PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state \
+      SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF ($PHASE_NOTE)" \
+      python3 scripts/progress.py start || true
     LAST_PCT=-1
     "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
+      ${LIVE_VF_ARGS[@]+"${LIVE_VF_ARGS[@]}"} \
       -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
       -crf ${CUR_CRF} -preset ${HEVC_PRESET} -maxrate ${MAXRATE_K:-1450}k -bufsize ${BUFSIZE_K:-2900}k \
       -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
@@ -263,59 +282,27 @@ if [ -s "$HEVC_FILE" ]; then
           pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
           if [ "$pct" != "$LAST_PCT" ]; then
             LAST_PCT=$pct
-            CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py progress "$pct" || true
+            CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" \
+              PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state \
+              SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF ($PHASE_NOTE)" \
+              python3 scripts/progress.py progress "$pct" || true
           fi
         fi
       done) \
-      > "$HEVC_LOG" 2>&1 || true
-    CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF" python3 scripts/progress.py done || true
-    if [ ! -s "$HEVC_FILE" ]; then
-      echo "❌ Re-encode CRF $CUR_CRF gagal menghasilkan file"
-      break
+      > "$HEVC_LOG" 2>&1
+    RE_RC=$?
+    CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" \
+      PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF ($PHASE_NOTE)" \
+      python3 scripts/progress.py done || true
+    if [ ! -s "$HEVC_FILE" ] || [ "${RE_RC:-0}" -ne 0 ]; then
+      echo "Re-encode failed crf=$CUR_CRF rc=$RE_RC"
+      tail -n 30 "$HEVC_LOG" 2>/dev/null || true
+      exit 1
     fi
   done
   echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
-
-  # === MIN BITRATE FLOOR (~1.2 Mbps) ===
-  # User feedback: 1.0 Mbps @720p terlalu buram; sweet spot ~1.3 Mbps.
-  # Kalau hasil < 1.2 Mbps dan CRF masih bisa diturunkan (>=22), re-encode 1x CRF-2.
-  MIN_BPS=1200000
-  HBR_NOW=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
-  case "$HBR_NOW" in ''|*[!0-9]*) HBR_NOW=0 ;; esac
-  if [ "$HBR_NOW" -gt 0 ] && [ "$HBR_NOW" -lt "$MIN_BPS" ]; then
-    FLOOR_CRF=$((CUR_CRF - 2))
-    if [ "$FLOOR_CRF" -lt 22 ]; then FLOOR_CRF=22; fi
-    if [ "$FLOOR_CRF" -lt "$CUR_CRF" ]; then
-      echo "🪞 Bitrate rendah (${HBR_NOW} bps < ${MIN_BPS}) — naik kualitas CRF $CUR_CRF → $FLOOR_CRF (target ~1.3 Mbps)"
-      CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-        "🪞 <b>Auto-quality:</b> bitrate terlalu rendah (&lt;1.2 Mbps). Re-encode CRF <code>$CUR_CRF</code> → <code>$FLOOR_CRF</code> biar tidak buram." || true
-      CUR_CRF=$FLOOR_CRF
-      HEVC_CRF=$CUR_CRF
-      CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py start || true
-      LAST_PCT=-1
-      "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
-        -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-        -crf ${CUR_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
-        -c:a copy -progress pipe:3 "$HEVC_FILE" \
-        3> >(while IFS='=' read -r k v; do
-          if [ "$k" = "out_time_ms" ]; then
-            ms=${v%.*}
-            [ "$ms" -gt 0 ] 2>/dev/null || continue
-            cur=$(( ms / 1000000 ))
-            pct=$(( (cur * 100) / SRC_DUR_INT )); [ "$pct" -gt 100 ] && pct=100
-            if [ "$pct" != "$LAST_PCT" ]; then
-              LAST_PCT=$pct
-              CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PROGRESS_STATE_FILE=/tmp/rusemeva_progress_state SRC_DUR_SEC="$SRC_DUR_INT" PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py progress "$pct" || true
-            fi
-          fi
-        done) \
-        > "$HEVC_LOG" 2>&1 || true
-      CHAT_ID="$CHAT_ID" FILENAME="$FILE" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" PROGRESS_MSG_FILE=/tmp/rusemeva_progress_msg_id PHASE_LABEL="Re-encode CRF $CUR_CRF (anti-blur)" python3 scripts/progress.py done || true
-      echo "HEVC_CRF_FINAL=$CUR_CRF" >> $GITHUB_ENV
-      HBR_NOW=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
-      echo "🪞 Setelah anti-blur: crf=$CUR_CRF bitrate=${HBR_NOW:-?}"
-    fi
-  fi
+  echo "ACT_DURATION_SEC=$SRC_DUR_INT" >> $GITHUB_ENV
+  echo "REQ_DURATION_SEC=${REQ_DUR:-}" >> $GITHUB_ENV
 
   echo "HEVC_FILE=$HEVC_FILE" >> $GITHUB_ENV
   echo "HEVC_SIZE=$(ls -lh "$HEVC_FILE" | awk '{print $5}')" >> $GITHUB_ENV
