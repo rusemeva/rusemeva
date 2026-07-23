@@ -484,8 +484,8 @@ jobs:
             -f "client_payload[hevc_preset]=$NEXT_PRESET" \
             -f "client_payload[hevc_crf]=$NEXT_CRF" \
             -f "client_payload[encode_profile]=${{ steps.inputs.outputs.encode_profile || '' }}" \
-            -f "client_payload[orv_id]=$ORV_ID" \
-            -f "client_payload[auto_retry]=1" || true
+            -f "client_payload[orv_id]=$ORV_ID" || true
+          # GitHub client_payload hard max = 10 keys — do not add more.
           echo "retried=1" >> $GITHUB_OUTPUT
           echo "✅ Auto-retry dispatched ($NEXT_PRESET)."
 
