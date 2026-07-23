@@ -386,18 +386,20 @@ async function handleSettingSelect(text, chatId, env) {
       const mark = k === key ? ' ▶' : '';
       msg += `• ${pp.label}${mark}: ~${formatDuration(e)} (${pp.quality})\n`;
     }
-    // Peringatan kalau total (rekam + encode) vs limit job 6 jam
-    const totalThis = durSec + estEncodeSeconds(key, durSec);
+    // Encode job terpisah (limit 6 jam). Jangan jumlahkan durasi konten + encode.
+    const encThis = estEncodeSeconds(key, durSec);
     const LIMIT = 6 * 3600;
-    msg += `\n💡 Estimasi ±30% (tergantung isi video & beban runner GitHub).`;
-    if (totalThis > LIMIT) {
-      msg += `\n⛔ <b>Ke-skip:</b> total ~${formatDuration(totalThis)} LEWAT limit 6 jam. ` +
-             `HEVC tidak akan diencode, original tetap dikirim.`;
-    } else if (totalThis > LIMIT * 0.85) {
-      msg += `\n⚠️ <b>Waspada:</b> total ~${formatDuration(totalThis)} mendekati limit 6 jam. ` +
-             `HEVC bisa ke-skip kalau keburu timeout (original tetap dikirim).`;
-    } else if (totalThis > LIMIT * 0.6) {
-      msg += `\n⏳ Total ~${formatDuration(totalThis)} — masih aman di bawah limit 6 jam.`;
+    msg += `
+💡 Estimasi encode ±30% (isi video & beban runner). Rekam VOD ≠ realtime.`;
+    if (encThis > LIMIT) {
+      msg += `
+⛔ <b>Encode</b> ~${formatDuration(encThis)} LEWAT limit 6 jam job encode — auto-downgrade.`;
+    } else if (encThis > LIMIT * 0.85) {
+      msg += `
+⚠️ Encode ~${formatDuration(encThis)} mendekati limit 6 jam runner.`;
+    } else {
+      msg += `
+⏳ Encode ~${formatDuration(encThis)} — di bawah limit 6 jam job encode.`;
     }
   } else {
     msg += `\n💡 Ketik /setting ${key} &lt;durasi&gt; (contoh: /setting ${key} 120m) untuk estimasi waktu encode.`;
@@ -513,16 +515,23 @@ async function handleRecord(text, chatId, env, ctx) {
   const ts = `${wib.getFullYear()}-${pad(wib.getMonth()+1)}-${pad(wib.getDate())}T${pad(wib.getHours())}-${pad(wib.getMinutes())}-${pad(wib.getSeconds())}`;
   const filename = `Rusemeva-Asset-${ts.replace('T', '_')}-${formatDurationShort(duration)}.mp4`;
 
-  // === #4 ESTIMASI SEBELUM REKAM: hitung & tampilkan di notif mulai ===
+  // === #4 ESTIMASI SEBELUM REKAM ===
+  // recSec = target panjang KONTEN (ffmpeg -t cap). Bukan wall-clock.
+  // VOD/Kick: download sering hitungan menit. Live: wall-clock ~ durasi.
+  // Encode = job TERPISAH (limit 6 jam sendiri) — jangan dijumlah seolah serial realtime.
   const recSec = duration;
   const encSec = estEncodeSeconds(profileKey, recSec, probeRes);
-  const totalSec = recSec + encSec;
   const LIMIT = 6 * 3600;
-  let estLine = `⏱ Estimasi: rekam ${formatDuration(recSec)} + encode ~${formatDuration(encSec)} (total ~${formatDuration(totalSec)})`;
-  if (totalSec > LIMIT) {
-    estLine += `\n⛔ Total LEWAT 6 jam — HEVC bisa ke-skip (auto-downgrade di encode.yml otomatis turun preset).`;
-  } else if (totalSec > LIMIT * 0.85) {
-    estLine += `\n⚠️ Mendekati limit 6 jam — HEVC bisa ke-potong (original tetap dikirim).`;
+  let estLine =
+    `⏱ Target konten: ${formatDuration(recSec)} (cap; VOD biasanya cepat, live ~realtime)
+` +
+    `🎞 Estimasi encode HEVC: ~${formatDuration(encSec)} (workflow terpisah, ±30%)`;
+  if (encSec > LIMIT) {
+    estLine += `
+⛔ Encode estimasi LEWAT 6 jam — auto-downgrade preset di runner.`;
+  } else if (encSec > LIMIT * 0.85) {
+    estLine += `
+⚠️ Encode mendekati limit 6 jam runner — auto-downgrade mungkin aktif.`;
   }
 
   // Trigger GitHub Actions

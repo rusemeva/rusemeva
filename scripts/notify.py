@@ -286,7 +286,7 @@ if job_status == "success":
             send_message(
                 f"⏳ <b>HEVC 10-bit sedang di-encode terpisah</b> (workflow <code>rusemeva-encode</code>, hingga 6 jam).\n"
                 f"🎚 Preset: <code>{hevc_preset}</code> (CRF {hevc_crf})\n"
-                f"⏱ Estimasi encode: <b>{fmt_dur(enc_secs)}</b> (~{rt}x realtime)\n"
+                f"🎞 Estimasi encode HEVC: <b>{fmt_dur(enc_secs)}</b> (~{rt}x realtime, job terpisah — bukan nunggu rekam realtime)\n"
                 f"🕐 Prediksi selesai ~<b>{eta_clock(enc_secs // 60)}</b>\n"
                 f"📤 Hasil akan dikirim <b>JIKA berhasil</b>; bila gagal akan ada laporan error.{warn}"
             )
