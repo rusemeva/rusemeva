@@ -213,6 +213,8 @@ jobs:
             # karena step sukses dicek dari ukuran file, bukan exit code.
             # -progress pipe:1 -> parse out_time_ms -> persen rekam real-time.
             LAST_PCT=-1
+            # Progress via fd pipe; capture ffmpeg/timeout exit via PIPESTATUS[0]
+            set +o pipefail
             timeout -k 30 "$REC_WALL" ffmpeg "${FFMPEG_ARGS[@]}" 2>/dev/null | while IFS='=' read -r k v; do
               if [ "$k" = "out_time_ms" ]; then
                 ms=${v%.*}
@@ -220,7 +222,6 @@ jobs:
                 cur=$(( ms / 1000000 ))
                 pct=$(( (cur * 100) / SRC_DUR_INT ))
                 [ "$pct" -gt 100 ] && pct=100
-                # Forward tiap perubahan %, progress.py yg akan throttle (5% / 5s)
                 if [ "$pct" != "$LAST_PCT" ]; then
                   LAST_PCT=$pct
                   echo "🔴 Rekam ${pct}%"
@@ -233,8 +234,20 @@ jobs:
                 fi
               fi
             done
-            FFMPEG_EXIT=$?
+            FFMPEG_EXIT=${PIPESTATUS[0]:-$?}
             set -e
+            # Classify stop (request duration is max, not force-pad)
+            if [ ! -f "$FILE" ] || [ "$(stat -c%s "$FILE" 2>/dev/null || echo 0)" -lt "$MIN_SIZE" ]; then
+              STOP_REASON="error"
+            elif [ "${FFMPEG_EXIT:-0}" -eq 124 ] || [ "${FFMPEG_EXIT:-0}" -eq 137 ]; then
+              STOP_REASON="timeout_backstop"
+            elif [ "${FFMPEG_EXIT:-0}" -eq 0 ]; then
+              STOP_REASON="requested_duration_reached_or_stream_ended"
+            else
+              STOP_REASON="stream_ended_or_partial"
+            fi
+            echo "STOP_REASON=$STOP_REASON (ffmpeg_exit=${FFMPEG_EXIT:-?})"
+            echo "STOP_REASON=$STOP_REASON" >> $GITHUB_ENV
 
             if [ -f "$FILE" ]; then
               ACTUAL_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
@@ -405,6 +418,12 @@ jobs:
           fi
 
           # ---- Export ke env untuk step berikutnya ----
+          REQ_SEC="${{ steps.inputs.outputs.duration }}"
+          case "$REQ_SEC" in ''|*[!0-9]*) REQ_SEC=0 ;; esac
+          if [ "$DUR_INT" -gt 0 ] && [ "$REQ_SEC" -gt 0 ] && [ "$DUR_INT" -lt $(( REQ_SEC * 90 / 100 )) ]; then
+            STOP_REASON="stream_ended"
+            echo "STOP_REASON=$STOP_REASON (actual ${DUR_INT}s < 90% of requested ${REQ_SEC}s)"
+          fi
           {
             echo "REAL_DURATION=$REAL_DURATION"
             echo "RESOLUTION=$RESOLUTION"
@@ -413,6 +432,9 @@ jobs:
             echo "FILE_SIZE=$FILE_SIZE"
             echo "THUMB_FILE=$THUMB"
             echo "HAS_THUMB=$HAS_THUMB"
+            echo "ACTUAL_DURATION_SEC=$DUR_INT"
+            echo "REQUESTED_DURATION_SEC=$REQ_SEC"
+            echo "STOP_REASON=${STOP_REASON:-}"
           } >> $GITHUB_ENV
 
       - name: Segment ORIGINAL kalau >2GB (biar bisa dikirim utuh)
@@ -502,7 +524,10 @@ jobs:
             -f "client_payload[filename]=${FILE}" \
             -f "client_payload[chat_id]=${CHAT_ID}" \
             -f "client_payload[human_duration]=${HUMAN_DUR}" \
-            -f "client_payload[duration]=${DURATION}" \
+            -f "client_payload[duration]=${ACTUAL_DURATION_SEC:-$DURATION}" \
+            -f "client_payload[actual_duration]=${ACTUAL_DURATION_SEC:-$DURATION}" \
+            -f "client_payload[requested_duration]=${REQUESTED_DURATION_SEC:-$DURATION}" \
+            -f "client_payload[stop_reason]=${STOP_REASON:-}" \
             -f "client_payload[release_tag]=${TAG}" \
             -f "client_payload[hevc_preset]=${HEVC_PRESET}" \
             -f "client_payload[hevc_crf]=${HEVC_CRF}" \
@@ -573,6 +598,9 @@ jobs:
             echo "file: ${FILE}"
             echo "size: ${FILE_SIZE}"
             echo "durasi: ${REAL_DURATION}"
+            echo "requested_duration_sec: ${REQUESTED_DURATION_SEC:-}"
+            echo "actual_duration_sec: ${ACTUAL_DURATION_SEC:-}"
+            echo "stop_reason: ${STOP_REASON:-}"
             echo "resolusi: ${RESOLUTION}"
             echo "codec: ${VCODEC}"
             echo "bitrate: ${VBITRATE}"
@@ -661,5 +689,8 @@ jobs:
           PHASE: original
           HEVC_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
           HEVC_CRF: ${{ steps.inputs.outputs.hevc_crf || '24' }}
+          STOP_REASON: ${{ env.STOP_REASON }}
+          REQUESTED_DURATION_SEC: ${{ env.REQUESTED_DURATION_SEC }}
+          ACTUAL_DURATION_SEC: ${{ env.ACTUAL_DURATION_SEC }}
 
         run: python3 scripts/notify.py
