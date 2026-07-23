@@ -337,7 +337,7 @@ async function handleSetting(chatId, env) {
     msg += `     preset: ${p.preset} | crf: ${p.crf} | kualitas: ${p.quality}\n`;
     msg += `     ${note}\n\n`;
   }
-  msg += '💡 Estimasi waktu encode otomatis disesuaikan durasi rekam. Contoh pakai /record 120m.';
+  msg += '💡 Estimasi encode mengikuti panjang konten (bukan wall-clock VOD). Contoh: /record 120m.';
   // pass env so send errors land in KV; keyboard optional
   const st = await sendMessage(env.BOT_TOKEN, chatId, msg, settingsKeyboard(), env);
   if (st && st >= 400) {
@@ -376,7 +376,7 @@ async function handleSettingSelect(text, chatId, env) {
     `📦 ${escapeHtml(p.note || '')}\n`;
 
   if (durSec && durSec > 0) {
-    msg += `\n<b>Estimasi encode (rekam ${formatDuration(durSec)}):</b>\n`;
+    msg += `\n<b>Estimasi encode untuk konten ${formatDuration(durSec)}):</b>\n`;
     msg += `⏱ Profil ini: ~${formatDuration(estEncodeSeconds(key, durSec))}\n\n`;
     // Bandingkan semua profil biar user tahu trade-off
     msg += `<b>Bandingkan semua profil:</b>\n`;
@@ -587,7 +587,7 @@ async function handleRecord(text, chatId, env, ctx) {
 
 async function handleStatus(chatId, env) {
   try {
-    const resp = await ghApi(env, `actions/runs?per_page=8`);
+    const resp = await ghApi(env, `actions/runs?per_page=15`);
     const data = await resp.json();
 
     if (!data.workflow_runs?.length) {
@@ -615,6 +615,14 @@ async function handleStatus(chatId, env) {
       const elapsed = Math.round((Date.now() - new Date(run.created_at)) / 1000);
       msg += `• ${phase}\n`;
       msg += `  ⏱ ${formatDuration(elapsed)} · mulai ${created} WIB\n`;
+      if (wf.includes('encode') && elapsed < 90 * 60) {
+        msg += `  ℹ️ Encode 4 jam media biasanya 40–70 mnt wall-clock (bukan stuck).\n`;
+      } else if (wf.includes('encode') && elapsed >= 90 * 60) {
+        msg += `  ⚠️ Encode sudah >90 mnt — cek log Actions jika % tidak naik.\n`;
+      }
+      if (wf.includes('record') || wf.includes('vault')) {
+        msg += `  ℹ️ Rekam VOD sering selesai hitungan menit (durasi di notif = panjang konten).\n`;
+      }
       // Tampilin run ID biar gak tebak-tebakan pas /cancel
       msg += `  🆔 Run: <code>${run.id}</code>\n`;
       // Coba resolve ORV ID dari KV (encode tulis run:<id> via /link)
@@ -622,7 +630,7 @@ async function handleStatus(chatId, env) {
       try {
         const orvId = run.display_title?.match(/(?:RSM|ORV)-[a-z0-9-]+/i)?.[0]
           || (await env.RUSEMEVA_KV.get(`run:${run.id}`));
-        if (orvId) orvShown = `  🏷 ORV: <code>${orvId}</code>\n`;
+        if (orvId) orvShown = `  🏷 ID: <code>${orvId}</code>\n`;
       } catch (_) {}
       if (orvShown) msg += orvShown;
       msg += `  🔗 ${run.html_url}\n`;
