@@ -245,12 +245,16 @@ if job_status == "success":
     # --- Phase original: kirim video ORIGINAL (asli, tidak diubah) ---
     # Kalau original > 2GB (limit Bot API 2GB), dilewati — HEVC di-encode terpisah & dikirim JIKA sukses.
     if phase in ("original", "both"):
+        req_h = os.environ.get("HUMAN_DUR") or os.environ.get("REQUESTED_HUMAN") or human_dur
+        stop_r = os.environ.get("STOP_REASON") or ""
+        stop_line = f"\n📌 Stop: <code>{stop_r}</code>" if stop_r else ""
         caption_orig = (
             f"✅ <b>Rekaman selesai!</b>\n\n"
             f"{id_line()}"
             f"📦 File: <code>{filename}</code>\n"
             f"📏 Size: {file_size}\n"
-            f"⏱ Durasi: {real_duration}\n"
+            f"⏱ Diminta: {req_h}\n"
+            f"⏱ Didapat: {real_duration}{stop_line}\n"
             f"🖥 Resolusi: {resolution}\n"
             f"🎞 Codec: {vcodec}\n"
             f"📶 Bitrate: {vbitrate}"
