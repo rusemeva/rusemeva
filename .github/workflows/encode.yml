@@ -514,10 +514,14 @@ jobs:
           if [ -n "${VF_LIVE:-}" ]; then
             LIVE_VF_ARGS=(-vf "$VF_LIVE")
           fi
+          # Plafon bitrate ~1.45 Mbps (sweet spot user ~1.3; 1.0 buram; 2.0 terlalu gendut)
+          MAXRATE_K=1450
+          BUFSIZE_K=$(( MAXRATE_K * 2 ))
           "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
             "${LIVE_VF_ARGS[@]}" \
             -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-            -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS}" -tag:v hvc1 \
+            -crf ${HEVC_CRF} -preset ${HEVC_PRESET} -maxrate ${MAXRATE_K}k -bufsize ${BUFSIZE_K}k \
+            -x265-params "${X265_PARAMS}" -tag:v hvc1 \
             -c:a copy -progress pipe:3 "$HEVC_FILE" \
             3> >(while IFS='=' read -r k v; do
               if [ "$k" = "out_time_ms" ]; then
@@ -540,33 +544,48 @@ jobs:
             echo "✅ HEVC selesai: $(ls -lh "$HEVC_FILE" | awk '{print $5}')"
 
             # === AUTO BITRATE/SIZE GUARD ===
-            # Target: HEVC harus lebih kecil dari original (kayak run 18 Jul: 2.2→1.4 Mbps).
-            # Kalau masih >= original, naikkan CRF bertahap (lebih longgar) lalu re-encode.
-            # Batas max CRF 28 biar kualitas tetap oke (tidak jelek parah).
-            # Target hemat: HEVC <= 90% original (margin kecil biar "turun beneran").
+            # Target KETAT: min(90% original, ~1.45 Mbps * durasi).
+            # Kasus 5.5G@3.3Mbps → 90% masih 4.9G (salah). User mau ~1.3 Mbps (~2.3G / 4 jam).
+            # maxrate di encode utama sudah plafon; guard ini re-encode CRF+2 kalau masih gendut.
             ORIG_BYTES=$(stat -c%s "$FILE" 2>/dev/null || wc -c < "$FILE")
-            TARGET_BYTES=$(awk "BEGIN{printf \"%d\", $ORIG_BYTES * 0.90}")
+            TARGET_FROM_ORIG=$(awk "BEGIN{printf \"%d\", $ORIG_BYTES * 0.90}")
+            # 1.45 Mbps * seconds / 8 = bytes (total container incl. audio copy)
+            MAX_BPS=1450000
+            TARGET_FROM_BPS=$(awk "BEGIN{printf \"%d\", $MAX_BPS * $SRC_DUR_INT / 8}")
+            if [ "$TARGET_FROM_BPS" -gt 0 ] && [ "$TARGET_FROM_BPS" -lt "$TARGET_FROM_ORIG" ]; then
+              TARGET_BYTES=$TARGET_FROM_BPS
+              TARGET_WHY="<=1.45 Mbps (~$(awk "BEGIN{printf \"%.2f\", $TARGET_FROM_BPS/1024/1024/1024}")G)"
+            else
+              TARGET_BYTES=$TARGET_FROM_ORIG
+              TARGET_WHY="<=90% original"
+            fi
+            echo "🎯 Size target: $TARGET_BYTES bytes ($TARGET_WHY) | orig=$ORIG_BYTES dur=${SRC_DUR_INT}s"
             CUR_CRF="$HEVC_CRF"
             MAX_CRF=28
+            MAXRATE_K=1450
+            BUFSIZE_K=$(( MAXRATE_K * 2 ))
             try=0
             while true; do
               HEVC_BYTES=$(stat -c%s "$HEVC_FILE" 2>/dev/null || wc -c < "$HEVC_FILE")
-              echo "📏 size: orig=${ORIG_BYTES} hevc=${HEVC_BYTES} target<=${TARGET_BYTES} (crf=${CUR_CRF})"
-              if [ "$HEVC_BYTES" -le "$TARGET_BYTES" ]; then
-                echo "✅ Size OK (HEVC <= 90% original) di CRF $CUR_CRF"
+              HBR_CHK=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$HEVC_FILE" 2>/dev/null | head -1)
+              case "$HBR_CHK" in ''|*[!0-9]*) HBR_CHK=0 ;; esac
+              echo "📏 size: orig=${ORIG_BYTES} hevc=${HEVC_BYTES} target<=${TARGET_BYTES} bps=${HBR_CHK} (crf=${CUR_CRF})"
+              # OK jika size <= target ATAU bitrate <= 1.50 Mbps (margin kecil di atas plafon)
+              if [ "$HEVC_BYTES" -le "$TARGET_BYTES" ] || { [ "$HBR_CHK" -gt 0 ] && [ "$HBR_CHK" -le 1500000 ]; }; then
+                echo "✅ Size/bitrate OK di CRF $CUR_CRF ($TARGET_WHY, bps=${HBR_CHK})"
                 break
               fi
               NEXT_CRF=$((CUR_CRF + 2))
               if [ "$NEXT_CRF" -gt "$MAX_CRF" ]; then
                 echo "⚠️ Masih besar di CRF $CUR_CRF, tapi sudah cap $MAX_CRF — stop biar kualitas tidak jelek."
                 CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                  "⚠️ <b>Auto-size:</b> HEVC masih besar di CRF $CUR_CRF (cap $MAX_CRF). Kualitas dipertahankan, size tidak dipaksa lebih kecil." || true
+                  "⚠️ <b>Auto-size:</b> HEVC masih besar di CRF $CUR_CRF (cap $MAX_CRF). Target ~1.45 Mbps / $TARGET_WHY." || true
                 break
               fi
               try=$((try + 1))
-              echo "🔻 Auto-size try#$try: CRF $CUR_CRF → $NEXT_CRF (HEVC masih >= 90% original)"
+              echo "🔻 Auto-size try#$try: CRF $CUR_CRF → $NEXT_CRF (HEVC > target ~1.45 Mbps)"
               CHAT_ID="$CHAT_ID" TG_API_URL="$TG_API_URL" BOT_TOKEN="$BOT_TOKEN" python3 scripts/send_message.py \
-                "🔻 <b>Auto-size:</b> file HEVC masih besar, re-encode CRF <code>$CUR_CRF</code> → <code>$NEXT_CRF</code> (target &lt; original, max CRF $MAX_CRF)." || true
+                "🔻 <b>Auto-size:</b> HEVC masih gendut, re-encode CRF <code>$CUR_CRF</code> → <code>$NEXT_CRF</code> (target ~1.45 Mbps, max CRF $MAX_CRF)." || true
               CUR_CRF=$NEXT_CRF
               HEVC_CRF=$CUR_CRF
               # re-encode (progress bar reset ringan)
@@ -574,7 +593,8 @@ jobs:
               LAST_PCT=-1
               "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
                 -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-                -crf ${CUR_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
+                -crf ${CUR_CRF} -preset ${HEVC_PRESET} -maxrate ${MAXRATE_K}k -bufsize ${BUFSIZE_K}k \
+                -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
                 -c:a copy -progress pipe:3 "$HEVC_FILE" \
                 3> >(while IFS='=' read -r k v; do
                   if [ "$k" = "out_time_ms" ]; then
@@ -616,7 +636,8 @@ jobs:
                 LAST_PCT=-1
                 "$FFMPEG_STATIC" -hide_banner -y -i "$FILE" \
                   -c:v libx265 -profile:v main10 -pix_fmt yuv420p10le \
-                  -crf ${CUR_CRF} -preset ${HEVC_PRESET} -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
+                  -crf ${CUR_CRF} -preset ${HEVC_PRESET} -maxrate 1450k -bufsize 2900k \
+                  -x265-params "${X265_PARAMS:-aq-mode=3:aq-strength=1.0}" -tag:v hvc1 \
                   -c:a copy -progress pipe:3 "$HEVC_FILE" \
                   3> >(while IFS='=' read -r k v; do
                     if [ "$k" = "out_time_ms" ]; then
