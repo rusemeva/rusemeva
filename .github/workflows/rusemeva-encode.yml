@@ -392,6 +392,73 @@ jobs:
           CHOSEN_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
           ENCODE_PROFILE: ${{ steps.inputs.outputs.encode_profile || '' }}
         run: bash scripts/run_hevc_encode.sh
+
+      # === #4 ANALYTICS: post encode summary ke Worker /ingest ===
+      - name: Post encode analytics ke Worker
+        if: success() && env.HEVC_FILE != ''
+        continue-on-error: true
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL || 'https://rusemeva.rusemeva.workers.dev' }}
+          PROGRESS_SECRET: ${{ secrets.PROGRESS_SECRET || '' }}
+          ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
+          ENCODE_PROFILE: ${{ steps.inputs.outputs.encode_profile || '' }}
+          HEVC_PRESET: ${{ steps.autodg.outputs.FINAL_PRESET || steps.inputs.outputs.hevc_preset || 'veryfast' }}
+          HEVC_CRF_START: ${{ steps.inputs.outputs.hevc_crf || '24' }}
+          HEVC_CRF_FINAL: ${{ env.HEVC_CRF_FINAL || '' }}
+          ACT_DURATION_SEC: ${{ env.ACT_DURATION_SEC || steps.inputs.outputs.duration || '0' }}
+          HEVC_SIZE: ${{ env.HEVC_SIZE || '' }}
+          HEVC_VBITRATE: ${{ env.HEVC_VBITRATE || '' }}
+          ENC_ELAPSED: ${{ env.ENC_ELAPSED || '' }}
+          LIVE_MODE: ${{ env.LIVE_MODE || '0' }}
+          SCENE_LABEL: ${{ env.SCENE_LABEL || '' }}
+          CHOSEN_PRESET: ${{ steps.inputs.outputs.hevc_preset || 'veryfast' }}
+        run: |
+          # Parse HEVC size to MB
+          SIZE_MB=0
+          if [ -n "$HEVC_SIZE" ]; then
+            # "1.1G" -> 1100, "450M" -> 450
+            case "$HEVC_SIZE" in
+              *G) SIZE_MB=$(awk "BEGIN{printf \"%.1f\", ${HEVC_SIZE%G}*1024}") ;;
+              *M) SIZE_MB=${HEVC_SIZE%M} ;;
+              *K) SIZE_MB=$(awk "BEGIN{printf \"%.2f\", ${HEVC_SIZE%K}/1024}") ;;
+            esac
+          fi
+          # Parse bitrate "1.31 Mbps" -> 1.31
+          BR_MBPS=0
+          if [ -n "$HEVC_VBITRATE" ]; then
+            BR_MBPS=$(echo "$HEVC_VBITRATE" | grep -oP '[0-9.]+' | head -1)
+          fi
+          # Parse elapsed seconds from env
+          ELAPSED=${ENC_ELAPSED:-0}
+          # realtime_x: prefer from env, else compute
+          RT_X=$(echo "$ACT_DURATION_SEC $ELAPSED" | awk '{if($2>0) printf "%.2f",$1/$2; else print "0"}')
+          # Auto-downgrade: true kalau FINAL_PRESET != CHOSEN_PRESET
+          AD="false"
+          if [ "${{ steps.autodg.outputs.FINAL_PRESET }}" != "$CHOSEN_PRESET" ]; then
+            AD="true"
+          fi
+          LIVE="false"
+          if [ "${LIVE_MODE:-0}" = "1" ]; then LIVE="true"; fi
+
+          curl -fsS --retry 2 --retry-delay 3 -X POST "$WORKER_URL/ingest" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"id\": \"${ORV_ID}\",
+              \"profile\": \"${ENCODE_PROFILE}\",
+              \"preset\": \"${HEVC_PRESET}\",
+              \"crf_start\": ${HEVC_CRF_START:-24},
+              \"crf_final\": ${HEVC_CRF_FINAL:-${HEVC_CRF_START:-24}},
+              \"scene_label\": \"${SCENE_LABEL}\",
+              \"duration_sec\": ${ACT_DURATION_SEC:-0},
+              \"hevc_size_mb\": ${SIZE_MB:-0},
+              \"hevc_bitrate_mbps\": ${BR_MBPS:-0},
+              \"encode_time_sec\": ${ELAPSED:-0},
+              \"realtime_x\": ${RT_X:-0},
+              \"auto_downgrade\": ${AD},
+              \"live_mode\": ${LIVE},
+              \"secret\": \"${PROGRESS_SECRET}\"
+            }" 2>/dev/null && echo "📊 Analytics posted" || echo "⚠️ Analytics post gagal (non-fatal)"
+
       # === #1 SPLIT UPLOAD >2GB: pecah HEVC jadi part <2GB (limit Bot API) ===
       # Pakai split -b (bukan ffmpeg) biar gak re-encode. Kirim tiap part via notify.
       - name: Split HEVC kalau >2GB (biar bisa dikirim Telegram)
@@ -439,6 +506,7 @@ jobs:
           ORV_ID: ${{ steps.inputs.outputs.orv_id || '' }}
           HEVC_SPLIT: ${{ env.HEVC_SPLIT || '0' }}
           FAIL_REASON: ${{ env.FAIL_REASON || 'unknown' }}
+          CHAPTERS_TEXT: ${{ env.CHAPTERS_TEXT || '' }}
           PHASE: hevc
         run: python3 scripts/notify.py
 

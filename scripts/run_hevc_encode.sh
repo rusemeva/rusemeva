@@ -99,6 +99,127 @@ fi
 
 # x265 adaptive quant: alokasi bit lebih pintar per-block (dalam-frame scene-aware)
 
+# === CHAPTER MARKERS (scene detection) ===
+# Deteksi scene change → cluster jadi chapter list.
+# Decode-only (no encode), ~2-5 min untuk video 2 jam.
+CHAPTERS_FILE="/tmp/rusemeva_chapters.json"
+CHAPTERS_TEXT=""
+if [ "${SRC_DUR_INT:-0}" -ge 120 ] 2>/dev/null; then
+  echo "📌 Chapter detection (scene changes)..."
+  SCENE_TIMES_FILE="/tmp/rusemeva_scene_times.txt"
+  # ffmpeg select='gt(scene,0.3)' = scene change >30% difference
+  # showinfo prints pts_time to stderr. Decode-only, no encode.
+  timeout 300 "$FFMPEG_STATIC" -hide_banner -loglevel info \
+    -i "$FILE" \
+    -vf "select='gt(scene,0.3)',showinfo" \
+    -f null - 2>&1 \
+    | grep -oP 'pts_time:\K[0-9.]+' > "$SCENE_TIMES_FILE" 2>/dev/null || true
+
+  SCENE_COUNT=$(wc -l < "$SCENE_TIMES_FILE" 2>/dev/null || echo 0)
+  echo "📌 Detected $SCENE_COUNT raw scene changes"
+
+  if [ "$SCENE_COUNT" -gt 0 ] 2>/dev/null; then
+    # Cluster: keep scenes ≥30s apart, limit to 15 most significant
+    # Auto-label based on position in video
+    python3 - "$SCENE_TIMES_FILE" "$SRC_DUR_INT" "$CHAPTERS_FILE" <<'PYEOF'
+import json, sys
+
+times_file = sys.argv[1]
+dur = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+out_file = sys.argv[3] if len(sys.argv) > 3 else "/tmp/rusemeva_chapters.json"
+
+raw = []
+with open(times_file) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            try:
+                raw.append(float(line))
+            except ValueError:
+                pass
+
+if not raw:
+    sys.exit(0)
+
+# Always include 0:00
+raw = sorted(set([0.0] + raw))
+
+# Cluster: keep timestamps ≥30s apart
+MIN_GAP = 30
+clustered = [raw[0]]
+for t in raw[1:]:
+    if t - clustered[-1] >= MIN_GAP:
+        clustered.append(t)
+
+# Cap at 15 chapters
+if len(clustered) > 15:
+    # Keep evenly spaced + first/last
+    step = len(clustered) / 15
+    picked = [clustered[0]]
+    for i in range(1, 14):
+        picked.append(clustered[int(i * step)])
+    picked.append(clustered[-1])
+    clustered = sorted(set(picked))
+
+# Auto-label based on position
+def label(t, dur, idx, total):
+    pct = (t / dur * 100) if dur > 0 else 0
+    if idx == 0:
+        return "Opening"
+    if idx == total - 1:
+        return "Closing"
+    if pct < 10:
+        return "Intro"
+    if pct > 90:
+        return "Penutup"
+    if 40 <= pct <= 60:
+        return "Pembahasan utama"
+    return f"Segmen {idx}"
+
+chapters = []
+for i, t in enumerate(clustered):
+    m, s = divmod(int(t), 60)
+    h, m = divmod(m, 60)
+    ts = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+    chapters.append({"time": ts, "seconds": int(t), "label": label(t, dur, i, len(clustered))})
+
+with open(out_file, "w") as f:
+    json.dump(chapters, f)
+
+print(f"📌 {len(chapters)} chapters generated")
+PYEOF
+
+    if [ -s "$CHAPTERS_FILE" ]; then
+      CHAPTERS_COUNT=$(python3 -c "import json; print(len(json.load(open('$CHAPTERS_FILE'))))" 2>/dev/null || echo 0)
+      echo "📌 $CHAPTERS_COUNT chapters:"
+      python3 -c "
+import json
+ch = json.load(open('$CHAPTERS_FILE'))
+for c in ch:
+    print(f\"  {c['time']} — {c['label']}\")
+" 2>/dev/null || true
+      # Export formatted text for notify.py
+      CHAPTERS_TEXT=$(python3 -c "
+import json
+ch = json.load(open('$CHAPTERS_FILE'))
+lines = []
+for c in ch:
+    lines.append(f\"{c['time']} — {c['label']}\")
+print(chr(10).join(lines))
+" 2>/dev/null || echo "")
+    fi
+  else
+    echo "📌 No scene changes detected — skip chapters"
+  fi
+  rm -f "$SCENE_TIMES_FILE" 2>/dev/null || true
+else
+  echo "ℹ️ Video pendek (<120s) — skip chapter detection"
+fi
+echo "CHAPTERS_FILE=$CHAPTERS_FILE" >> $GITHUB_ENV
+echo "CHAPTERS_TEXT<<RUSEMEVA_EOF" >> $GITHUB_ENV
+echo "$CHAPTERS_TEXT" >> $GITHUB_ENV
+echo "RUSEMEVA_EOF" >> $GITHUB_ENV
+
 # === LIVE-FRIENDLY MODE (siaran TV) ===
 # Aktif jika: profil /setting live  ATAU auto-detect chrome statis (logo/ticker).
 # Efek: AQ lebih agresif di detail, denoise ringan, jaga tengah, hemat area statis.
@@ -348,6 +469,9 @@ if [ -s "$HEVC_FILE" ]; then
   if [ -s "$HEVC_THUMB" ]; then echo "HEVC_THUMB_FILE=$HEVC_THUMB" >> $GITHUB_ENV; echo "HAS_HEVC_THUMB=1" >> $GITHUB_ENV; else echo "HAS_HEVC_THUMB=0" >> $GITHUB_ENV; fi
   # === #7 KALIBRASI: hitung realtime_x aktual & kirim ke worker (KV) ===
   ENC_ELAPSED=$(( SECONDS - ENC_START ))
+  echo "ENC_ELAPSED=$ENC_ELAPSED" >> $GITHUB_ENV
+  echo "SCENE_LABEL=${SCENE_LABEL:-normal}" >> $GITHUB_ENV
+  echo "LIVE_MODE=${LIVE_MODE:-0}" >> $GITHUB_ENV
   if [ "$HDUR_INT" -gt 0 ] && [ "$ENC_ELAPSED" -gt 0 ]; then
     ACT_RT=$(awk "BEGIN{printf \"%.4f\", $HDUR_INT / $ENC_ELAPSED}")
     echo "🎯 realtime_x aktual: ${ACT_RT}x (video ${HDUR_INT}s / encode ${ENC_ELAPSED}s)"

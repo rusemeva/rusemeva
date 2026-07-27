@@ -77,6 +77,21 @@ hevc_dur = os.environ.get("HEVC_DUR", "") or real_duration
 hevc_thumb_file = os.environ.get("HEVC_THUMB_FILE", "")
 has_hevc_thumb = os.environ.get("HAS_HEVC_THUMB", "0") == "1"
 
+# === CHAPTER MARKERS (dari run_hevc_encode.sh) ===
+chapters_text = os.environ.get("CHAPTERS_TEXT", "").strip()
+
+def chapters_block():
+    """Format chapter list untuk caption Telegram."""
+    if not chapters_text:
+        return ""
+    lines = [l.strip() for l in chapters_text.split("\n") if l.strip()]
+    if not lines:
+        return ""
+    block = "\n\n📌 <b>Chapters:</b>\n"
+    for l in lines:
+        block += f"  {l}\n"
+    return block
+
 run_url = f"{server_url}/{repo}/actions/runs/{run_id}"
 release_url = f"https://github.com/{repo}/releases/tag/{tag}" if tag else ""
 
@@ -305,6 +320,7 @@ if job_status == "success":
                 f"🖥 Resolusi: {hevc_res}\n"
                 f"🎞 Codec: {hevc_codec}\n"
                 f"📶 Bitrate: {hevc_br}"
+                f"{chapters_block()}"
             )
             send_video_with_fallback(hevc_file, caption_hevc, hevc_thumb_path)
         elif os.environ.get("HEVC_SPLIT", "0") == "1" and hevc_file:

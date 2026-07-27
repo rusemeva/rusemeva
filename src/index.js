@@ -63,6 +63,10 @@ export default {
           const raw = await env.RUSEMEVA_KV.get(`orv:rtcal:${preset}`);
           return new Response(raw || '', { status: 200 });
         }
+        // === #4 Endpoint /dashboard: analytics dashboard HTML ===
+        if (url.pathname === '/dashboard') {
+          return await handleDashboard(env);
+        }
       }
 
       if (request.method === 'POST') {
@@ -135,6 +139,45 @@ export default {
           }
         }
 
+        // === #4 Endpoint /ingest: terima ringkasan encode dari GHA -> simpan ke KV ===
+        if (url.pathname === '/ingest') {
+          try {
+            const body = await request.json();
+            const secret = (body.secret || '').toString();
+            if (env.PROGRESS_SECRET && secret !== env.PROGRESS_SECRET) {
+              return new Response('forbidden', { status: 403 });
+            }
+            const record = {
+              id: (body.id || '').toString(),
+              ts: new Date().toISOString(),
+              profile: (body.profile || '').toString(),
+              preset: (body.preset || '').toString(),
+              crf_start: parseInt(body.crf_start) || 0,
+              crf_final: parseInt(body.crf_final) || 0,
+              scene_label: (body.scene_label || '').toString(),
+              duration_sec: parseInt(body.duration_sec) || 0,
+              hevc_size_mb: parseFloat(body.hevc_size_mb) || 0,
+              hevc_bitrate_mbps: parseFloat(body.hevc_bitrate_mbps) || 0,
+              encode_time_sec: parseInt(body.encode_time_sec) || 0,
+              realtime_x: parseFloat(body.realtime_x) || 0,
+              auto_downgrade: !!body.auto_downgrade,
+              live_mode: !!body.live_mode,
+            };
+            // Baca list yang ada, append, cap 500
+            let list = [];
+            try {
+              const raw = await env.RUSEMEVA_KV.get('orv:analytics');
+              if (raw) list = JSON.parse(raw);
+            } catch (_) {}
+            list.push(record);
+            if (list.length > 500) list = list.slice(-500);
+            await env.RUSEMEVA_KV.put('orv:analytics', JSON.stringify(list), { expirationTtl: 180 * 86400 });
+            return new Response('ok', { status: 200 });
+          } catch (_) {
+            return new Response('err', { status: 500 });
+          }
+        }
+
         // (handler /rtcal sudah dipindah ke awal fetch: GET baca kalibrasi, POST simpan)
 
         const update = await request.json();
@@ -192,6 +235,7 @@ export default {
                         '/record &lt;url&gt; &lt;durasi&gt; --referer &lt;url&gt; — Process with referer\n' +
                         '/setting — Pilih profil encode HEVC\n' +
                         '/status — Cek status\n' +
+                        '/stats — Statistik encode\n' +
                         '/cancel — Batalkan proses\n\n' +
                         '<b>Format durasi:</b>\n' +
                         '  300 / 300s → 300 detik\n' +
@@ -218,6 +262,8 @@ export default {
             await handleStatus(chatId, env);
           } else if (text === '/cancel' || text.startsWith('/cancel ')) {
             await handleCancel(chatId, env, text);
+          } else if (text === '/stats') {
+            await handleStats(chatId, env);
           } else if (text.startsWith('/')) {
             await sendMessage(env.BOT_TOKEN, chatId,
               '❓ Command tidak dikenali.\nKetik /start untuk melihat daftar command.'
@@ -763,6 +809,162 @@ async function handleCancel(chatId, env, text) {
 }
 
 // ============ DURATION PARSING ============
+
+// ============ ANALYTICS: /stats + /dashboard ============
+
+async function getAnalytics(env) {
+  try {
+    const raw = await env.RUSEMEVA_KV.get('orv:analytics');
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return [];
+}
+
+async function handleStats(chatId, env) {
+  const list = await getAnalytics(env);
+  if (!list.length) {
+    await sendMessage(env.BOT_TOKEN, chatId, '📊 Belum ada data encode. Jalankan /record dulu.');
+    return;
+  }
+
+  // Filter 30 hari terakhir
+  const cutoff = Date.now() - 30 * 86400 * 1000;
+  const recent = list.filter(r => new Date(r.ts).getTime() > cutoff);
+  const data = recent.length > 0 ? recent : list.slice(-50);
+
+  const total = data.length;
+  const totalDur = data.reduce((s, r) => s + (r.duration_sec || 0), 0);
+  const totalHevcBytes = data.reduce((s, r) => s + (r.hevc_size_mb || 0) * 1024 * 1024, 0);
+  const avgRt = data.filter(r => r.realtime_x > 0).reduce((s, r, _, a) => s + r.realtime_x / a.length, 0);
+  const avgBr = data.filter(r => r.hevc_bitrate_mbps > 0).reduce((s, r, _, a) => s + r.hevc_bitrate_mbps / a.length, 0);
+
+  // Scene distribution
+  const sceneCounts = {};
+  data.forEach(r => { const k = r.scene_label || 'unknown'; sceneCounts[k] = (sceneCounts[k] || 0) + 1; });
+  const sceneTop = Object.entries(sceneCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  // Profile distribution
+  const profCounts = {};
+  data.forEach(r => { const k = r.profile || 'unknown'; profCounts[k] = (profCounts[k] || 0) + 1; });
+  const profTop = Object.entries(profCounts).sort((a, b) => b[1] - a[1]);
+
+  // Downgrade & failure stats
+  const downgrades = data.filter(r => r.auto_downgrade).length;
+  const liveCount = data.filter(r => r.live_mode).length;
+
+  // Encode time
+  const encTimes = data.filter(r => r.encode_time_sec > 0);
+  const avgEncTime = encTimes.length > 0 ? encTimes.reduce((s, r, _, a) => s + r.encode_time_sec / a.length, 0) : 0;
+
+  const fmtBytes = (b) => {
+    if (b > 1024 * 1024 * 1024) return `${(b / 1024 / 1024 / 1024).toFixed(1)} GB`;
+    return `${(b / 1024 / 1024).toFixed(0)} MB`;
+  };
+  const fmtDur = (s) => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}j${m}m` : `${m}m`;
+  };
+
+  const scope = recent.length > 0 ? '30 hari' : `${total} data terakhir`;
+  let msg = `📊 <b>Rusemeva Stats</b> (${scope})\n\n`;
+  msg += `🎬 Total rekaman: <b>${total}</b>\n`;
+  msg += `⏱ Total durasi: <b>${fmtDur(totalDur)}</b>\n`;
+  msg += `📦 Total HEVC: <b>${fmtBytes(totalHevcBytes)}</b>\n\n`;
+  msg += `⚡ Avg encode speed: <b>${avgRt.toFixed(1)}x</b> realtime\n`;
+  msg += `🎯 Avg bitrate: <b>${avgBr.toFixed(2)} Mbps</b>\n`;
+  if (avgEncTime > 0) msg += `⏱ Avg encode time: <b>${fmtDur(Math.round(avgEncTime))}</b>\n`;
+  msg += `\n`;
+
+  if (sceneTop.length > 0) {
+    msg += `🧠 Scene: ${sceneTop.map(([k, v]) => `${k} ${Math.round(v / total * 100)}%`).join(', ')}\n`;
+  }
+
+  if (downgrades > 0 || liveCount > 0) {
+    msg += `🔻 Auto-downgrade: ${downgrades} (${Math.round(downgrades / total * 100)}%)\n`;
+    if (liveCount > 0) msg += `📺 Live mode: ${liveCount} (${Math.round(liveCount / total * 100)}%)\n`;
+  }
+
+  if (profTop.length > 0) {
+    msg += `\n⚙️ Profile: ${profTop.map(([k, v]) => {
+      const label = ENCODE_PROFILES[k]?.label || k;
+      return `${label} ${Math.round(v / total * 100)}%`;
+    }).join(' | ')}\n`;
+  }
+
+  msg += `\n📊 Dashboard: <a href="https://rusemeva.rusemeva.workers.dev/dashboard">/dashboard</a>`;
+
+  await sendMessage(env.BOT_TOKEN, chatId, msg);
+}
+
+async function handleDashboard(env) {
+  const list = await getAnalytics(env);
+  const data = JSON.stringify(list);
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rusemeva Analytics</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#c9d1d9;padding:20px}
+h1{color:#58a6ff;margin-bottom:20px;font-size:1.5em}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:24px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
+.card h3{color:#8b949e;font-size:.85em;text-transform:uppercase;margin-bottom:12px;letter-spacing:.5px}
+.stat{font-size:2em;font-weight:700;color:#58a6ff}
+.sub{color:#8b949e;font-size:.85em;margin-top:4px}
+canvas{max-height:250px}
+.empty{text-align:center;padding:40px;color:#8b949e}
+</style></head><body>
+<h1>📊 Rusemeva Analytics</h1>
+<div class="grid" id="stats"></div>
+<div class="grid">
+<div class="card"><h3>Encode Speed Trend</h3><canvas id="speedChart"></canvas></div>
+<div class="card"><h3>CRF Distribution</h3><canvas id="crfChart"></canvas></div>
+<div class="card"><h3>Scene Complexity</h3><canvas id="sceneChart"></canvas></div>
+<div class="card"><h3>Profile Usage</h3><canvas id="profileChart"></canvas></div>
+</div>
+<script>
+const DATA=${data};
+if(!DATA.length){document.getElementById('stats').innerHTML='<div class="empty">Belum ada data encode.</div>';throw 'no data'}
+const total=DATA.length;
+const totalDur=DATA.reduce((s,r)=>s+(r.duration_sec||0),0);
+const totalBytes=DATA.reduce((s,r)=>s+(r.hevc_size_mb||0)*1024*1024,0);
+const avgRt=DATA.filter(r=>r.realtime_x>0).reduce((s,r,_,a)=>s+r.realtime_x/a.length,0);
+const avgBr=DATA.filter(r=>r.hevc_bitrate_mbps>0).reduce((s,r,_,a)=>s+r.hevc_bitrate_mbps/a.length,0);
+const fmtB=b=>b>1073741824?(b/1073741824).toFixed(1)+' GB':(b/1048576).toFixed(0)+' MB';
+const fmtD=s=>{const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h?h+'j'+m+'m':m+'m'};
+document.getElementById('stats').innerHTML=
+'<div class="card"><h3>Total Rekaman</h3><div class="stat">'+total+'</div><div class="sub">'+fmtD(totalDur)+' total durasi</div></div>'+
+'<div class="card"><h3>Total HEVC</h3><div class="stat">'+fmtB(totalBytes)+'</div><div class="sub">~'+(totalBytes/totalDur/125000).toFixed(2)+'x kompresi</div></div>'+
+'<div class="card"><h3>Avg Speed</h3><div class="stat">'+avgRt.toFixed(1)+'x</div><div class="sub">realtime</div></div>'+
+'<div class="card"><h3>Avg Bitrate</h3><div class="stat">'+avgBr.toFixed(2)+'</div><div class="sub">Mbps</div></div>';
+const colors=['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#79c0ff','#56d364','#e3b341'];
+const chartOpts={responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#c9d1d9'}}},scales:{x:{ticks:{color:'#8b949e'},grid:{color:'#21262d'}},y:{ticks:{color:'#8b949e'},grid:{color:'#21262d'}}}};
+// Speed trend
+const byDate={};DATA.forEach(r=>{const d=r.ts.slice(0,10);if(!byDate[d])byDate[d]=[];byDate[d].push(r.realtime_x||0)});
+const dates=Object.keys(byDate).sort();
+new Chart('speedChart',{type:'line',data:{labels:dates,datasets:[{label:'realtime_x',data:dates.map(d=>{const v=byDate[d];return v.reduce((s,x)=>s+x,0)/v.length}),borderColor:'#58a6ff',backgroundColor:'rgba(88,166,255,0.1)',fill:true,tension:0.3}]},options:{...chartOpts,plugins:{legend:{display:false}}}});
+// CRF distribution
+const crfC={};DATA.forEach(r=>{const k=r.crf_final||r.crf_start||'?';crfC[k]=(crfC[k]||0)+1});
+const crfK=Object.keys(crfC).sort((a,b)=>a-b);
+new Chart('crfChart',{type:'bar',data:{labels:crfK.map(k=>'CRF '+k),datasets:[{data:crfK.map(k=>crfC[k]),backgroundColor:crfK.map((_,i)=>colors[i%colors.length])}]},options:{...chartOpts,plugins:{legend:{display:false}}}});
+// Scene
+const sceneC={};DATA.forEach(r=>{const k=r.scene_label||'unknown';sceneC[k]=(sceneC[k]||0)+1});
+const sceneK=Object.keys(sceneC).sort((a,b)=>sceneC[b]-sceneC[a]);
+new Chart('sceneChart',{type:'doughnut',data:{labels:sceneK,datasets:[{data:sceneK.map(k=>sceneC[k]),backgroundColor:sceneK.map((_,i)=>colors[i%colors.length])}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#c9d1d9'},position:'right'}}}});
+// Profile
+const profC={};DATA.forEach(r=>{const k=r.profile||'unknown';profC[k]=(profC[k]||0)+1});
+const profK=Object.keys(profC).sort((a,b)=>profC[b]-profC[a]);
+new Chart('profileChart',{type:'pie',data:{labels:profK,datasets:[{data:profK.map(k=>profC[k]),backgroundColor:profK.map((_,i)=>colors[i%colors.length])}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#c9d1d9'},position:'right'}}}});
+</script></body></html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' }
+  });
+}
 
 function parseDuration(str) {
   str = str.trim().toLowerCase();
