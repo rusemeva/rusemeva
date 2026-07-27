@@ -57,6 +57,7 @@ jobs:
             echo "hevc_crf=${{ github.event.client_payload.hevc_crf || '24' }}" >> $GITHUB_OUTPUT
             echo "encode_profile=${{ github.event.client_payload.encode_profile || '' }}" >> $GITHUB_OUTPUT
             echo "orv_id=${{ github.event.client_payload.orv_id || '' }}" >> $GITHUB_OUTPUT
+            echo "source=${{ github.event.client_payload.source || '' }}" >> $GITHUB_OUTPUT
           else
             echo "m3u8_url=${{ inputs.m3u8_url }}" >> $GITHUB_OUTPUT
             echo "duration=${{ inputs.duration }}" >> $GITHUB_OUTPUT
@@ -75,6 +76,17 @@ jobs:
           DURATION_LABEL="${{ steps.inputs.outputs.duration_label }}"
           FNAME="Rusemeva-Asset-${NOW}-${DURATION_LABEL}.mp4"
           echo "filename=$FNAME" >> $GITHUB_OUTPUT
+
+      # === Resolve stream source (trans7 / sevenhub) → m3u8_url ===
+      - name: Resolve stream source
+        id: resolve
+        env:
+          source: ${{ steps.inputs.outputs.source || '' }}
+          WOWZA_SECRET: ${{ secrets.WOWZA_SECRET || '' }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          chat_id: ${{ steps.inputs.outputs.chat_id }}
+        run: bash scripts/resolve_source.sh
+        continue-on-error: false
 
       # === Link run rekam -> RSM-ID ke KV (biar /cancel <ORV> bisa resolve) ===
       - name: Link rekam run ke RSM-ID (KV)
@@ -142,13 +154,23 @@ jobs:
 
       - name: Record stream
         run: |
+          # Use resolved URL from source (trans7/sevenhub) if available
+          M3U8_URL="${RESOLVED_URL:-${{ steps.inputs.outputs.m3u8_url }}}"
+          if [ -n "$RESOLVED_URL" ]; then
+            echo "🔗 Using resolved URL from source: ${{ steps.inputs.outputs.source }}"
+          fi
+          if [ -n "$RESOLVED_REFERER" ]; then
+            REFERRER="$RESOLVED_REFERER"
+          else
+            REFERRER="${{ steps.inputs.outputs.referer }}"
+          fi
+
           echo "🎬 Starting recording..."
-          echo "URL: ${{ steps.inputs.outputs.m3u8_url }}"
+          echo "URL: ${M3U8_URL:0:80}..."
           echo "Duration: ${{ steps.inputs.outputs.human_duration }}"
           echo "Output: ${{ steps.fname.outputs.filename }}"
 
           FILE="${{ steps.fname.outputs.filename }}"
-          REFERRER="${{ steps.inputs.outputs.referer }}"
           if [ -n "$REFERRER" ]; then
             echo "Referer: $REFERRER"
           fi
@@ -175,7 +197,7 @@ jobs:
             FFMPEG_ARGS+=(-referer "$REFERRER")
           fi
 
-          FFMPEG_ARGS+=(-i "${{ steps.inputs.outputs.m3u8_url }}"
+          FFMPEG_ARGS+=(-i "$M3U8_URL"
             -c copy
             -movflags +faststart
             -max_muxing_queue_size 1024
@@ -555,8 +577,8 @@ jobs:
           TITLE="Rusemeva Vault — $(date '+%Y-%m-%d %H:%M:%S') WIB (${{ steps.inputs.outputs.duration_label }})"
 
           # --- Extract SEMUA URL segmen .ts dari playlist (bukan cuma 1) ---
-          M3U8="${{ steps.inputs.outputs.m3u8_url }}"
-          REF="${{ steps.inputs.outputs.referer }}"
+          M3U8="${RESOLVED_URL:-${{ steps.inputs.outputs.m3u8_url }}}"
+          REF="${RESOLVED_REFERER:-${{ steps.inputs.outputs.referer }}}"
           resolve_url() {
             b="$1"; r="$2"
             case "$r" in

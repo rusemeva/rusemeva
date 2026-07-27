@@ -233,6 +233,8 @@ export default {
                         '<b>Commands:</b>\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; — Process media\n' +
                         '/record &lt;url&gt; &lt;durasi&gt; --referer &lt;url&gt; — Process with referer\n' +
+                        '/trans7 &lt;durasi&gt; — Rekam Trans7 live\n' +
+                        '/sevenhub &lt;durasi&gt; — Rekam sevenhub live\n' +
                         '/setting — Pilih profil encode HEVC\n' +
                         '/status — Cek status\n' +
                         '/stats — Statistik encode\n' +
@@ -264,6 +266,10 @@ export default {
             await handleCancel(chatId, env, text);
           } else if (text === '/stats') {
             await handleStats(chatId, env);
+          } else if (text === '/trans7' || text.startsWith('/trans7 ')) {
+            await handleSourceRecord(text, chatId, env, ctx, 'trans7');
+          } else if (text === '/sevenhub' || text.startsWith('/sevenhub ')) {
+            await handleSourceRecord(text, chatId, env, ctx, 'sevenhub');
           } else if (text.startsWith('/')) {
             await sendMessage(env.BOT_TOKEN, chatId,
               '❓ Command tidak dikenali.\nKetik /start untuk melihat daftar command.'
@@ -806,6 +812,119 @@ async function handleCancel(chatId, env, text) {
     await sendMessage(env.BOT_TOKEN, chatId, `❌ Error: ${escapeHtml(err.message)}`);
   }
   return new Response('OK');
+}
+
+// ============ SOURCE RECORDING (trans7 / sevenhub) ============
+
+async function handleSourceRecord(text, chatId, env, ctx, source) {
+  const parts = text.trim().split(/\s+/);
+  let duration = 600; // default 10 menit
+
+  if (parts[1]) {
+    const parsed = parseDuration(parts[1]);
+    if (parsed === null) {
+      await sendMessage(env.BOT_TOKEN, chatId, `❌ Format durasi salah.\nContoh: /${source} 2h`);
+      return;
+    }
+    if (parsed <= 0 || parsed > 21600) {
+      await sendMessage(env.BOT_TOKEN, chatId, '❌ Durasi 1 detik - 6 jam.');
+      return;
+    }
+    duration = parsed;
+  }
+
+  // Guard: cek active runs
+  try {
+    const running = await checkActiveRuns(env, () => {});
+    if (running.length > 0) {
+      await sendMessage(env.BOT_TOKEN, chatId, '⛔ Masih ada proses berjalan. /status untuk detail.');
+      return;
+    }
+  } catch (_) {}
+
+  // SevenHub: cek apakah live
+  if (source === 'sevenhub') {
+    try {
+      const resp = await fetch('https://api.sevenhub.id/api/v1/live-interaction', {
+        headers: { 'User-Agent': 'Rusemeva/1.0' },
+        signal: AbortSignal.timeout(10000)
+      });
+      const data = await resp.json();
+      if (!data.status_live) {
+        await sendMessage(env.BOT_TOKEN, chatId,
+          '📺 <b>SevenHub sedang tidak live.</b>\nCoba lagi nanti saat streaming aktif.');
+        return;
+      }
+    } catch (e) {
+      await sendMessage(env.BOT_TOKEN, chatId, `❌ Gagal cek status sevenhub: ${escapeHtml(e.message)}`);
+      return;
+    }
+  }
+
+  // Generate filename + orvId
+  const now = new Date();
+  const wib = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
+  const pad = n => String(n).padStart(2, '0');
+  const ts = `${wib.getFullYear()}-${pad(wib.getMonth()+1)}-${pad(wib.getDate())}_${pad(wib.getHours())}-${pad(wib.getMinutes())}-${pad(wib.getSeconds())}`;
+  const sourceLabel = source === 'trans7' ? 'Trans7' : 'SevenHub';
+  const filename = `Rusemeva-Asset-${sourceLabel}-${ts}-${formatDurationShort(duration)}.mp4`;
+  const orvId = genOrvId();
+  const profileKey = await getProfile(env, chatId);
+  const profile = ENCODE_PROFILES[profileKey];
+
+  // Simpan mapping
+  try {
+    await Promise.race([
+      env.RUSEMEVA_KV.put(`orv:${orvId}`, JSON.stringify({
+        chat_id: String(chatId), type: source, created_at: new Date().toISOString(),
+      }), { expirationTtl: 7 * 86400 }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('kv timeout')), 3000))
+    ]);
+  } catch (_) {}
+
+  // Dispatch ke GHA — source-based (GHA akan resolve URL)
+  const payload = {
+    source: source,
+    duration: duration,
+    chat_id: String(chatId),
+    human_duration: formatDuration(duration),
+    duration_label: formatDurationShort(duration),
+    filename: filename,
+    orv_id: orvId,
+    hevc_preset: profile.preset,
+    hevc_crf: profile.crf,
+    encode_profile: profile.key,
+  };
+
+  const resp = await fetch(
+    `https://api.github.com/repos/${env.GH_OWNER}/${env.GH_REPO}/dispatches`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${env.GH_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'rusemeva-vault'
+      },
+      body: JSON.stringify({ event_type: 'record-request', client_payload: payload }),
+      signal: AbortSignal.timeout(15000)
+    }
+  );
+
+  if (resp.ok) {
+    await sendMessage(env.BOT_TOKEN, chatId,
+      `✅ <b>${sourceLabel} recording dimulai!</b>\n\n` +
+      `🆔 ID: <code>${orvId}</code>\n` +
+      `📺 Source: <b>${sourceLabel}</b>\n` +
+      `⏱ Durasi: ${formatDuration(duration)}\n` +
+      `📦 File: ${filename}\n` +
+      `⚙️ Encode: <b>${profile.label}</b> (${profile.preset}, crf ${profile.crf})\n\n` +
+      `🔗 URL akan di-resolve otomatis oleh GHA.\n` +
+      `Simpan ID untuk /cancel <id>.`
+    );
+  } else {
+    const err = await resp.text();
+    await sendMessage(env.BOT_TOKEN, chatId, `❌ Gagal dispatch: ${escapeHtml(err.slice(0, 300))}`);
+  }
 }
 
 // ============ DURATION PARSING ============
