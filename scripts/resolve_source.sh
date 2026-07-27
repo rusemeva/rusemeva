@@ -20,9 +20,10 @@ if [ "$SRC" = "trans7" ]; then
   python3 scripts/gen_token_gha.py "$SECRET"
 
 elif [ "$SRC" = "sevenhub" ]; then
-  echo "📺 Installing Playwright..."
-  pip install playwright -q 2>/dev/null || true
-  playwright install chromium -q 2>/dev/null || true
+  echo "📺 Installing Playwright + browser..."
+  pip install playwright 2>&1 | tail -2
+  playwright install chromium 2>&1 | tail -3
+  playwright install-deps chromium 2>&1 | tail -3 || true
   echo "📺 Resolving sevenhub m3u8 via browser..."
   python3 scripts/resolve_sevenhub.py
 
