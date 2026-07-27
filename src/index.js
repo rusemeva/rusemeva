@@ -842,23 +842,9 @@ async function handleSourceRecord(text, chatId, env, ctx, source) {
     }
   } catch (_) {}
 
-  // SevenHub: cek apakah live
+  // SevenHub: skip API check (inconsistent) — let GHA resolve via Playwright
   if (source === 'sevenhub') {
-    try {
-      const resp = await fetch('https://api.sevenhub.id/api/v1/live-interaction', {
-        headers: { 'User-Agent': 'Rusemeva/1.0' },
-        signal: AbortSignal.timeout(10000)
-      });
-      const data = await resp.json();
-      if (!data.status_live) {
-        await sendMessage(env.BOT_TOKEN, chatId,
-          '📺 <b>SevenHub sedang tidak live.</b>\nCoba lagi nanti saat streaming aktif.');
-        return;
-      }
-    } catch (e) {
-      await sendMessage(env.BOT_TOKEN, chatId, `❌ Gagal cek status sevenhub: ${escapeHtml(e.message)}`);
-      return;
-    }
+    await sendMessage(env.BOT_TOKEN, chatId, '⏳ Resolving sevenhub stream (Playwright)...');
   }
 
   // Generate filename + orvId
