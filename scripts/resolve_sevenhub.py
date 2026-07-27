@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Resolve sevenhub m3u8 URL via Playwright browser automation.
-Opens the Dailymotion embed, intercepts m3u8 network request.
+Opens the Dailymotion embed, intercepts LIVE video m3u8 network request.
 Exports RESOLVED_URL and RESOLVED_REFERER to GITHUB_ENV.
 """
 import os, sys, time
@@ -13,18 +13,19 @@ def main():
     VIDEO_ID = "x8qckyq"
     PLAYER_URL = f"https://geo.dailymotion.com/player/x15a7g.html?video={VIDEO_ID}"
 
-    m3u8_urls = []
-    all_urls = []
+    live_urls = []   # Actual live video m3u8 (cdndirector)
+    other_urls = []  # Other m3u8 (ads, manifests)
 
     def handle_response(response):
         url = response.url
-        if ".m3u8" in url:
-            m3u8_urls.append(url)
-            print(f"🎯 m3u8: {url[:100]}", flush=True)
-        # Also capture any hls/live related requests
-        if "hls" in url or "live" in url or "cdn" in url:
-            if url not in all_urls and ".ts" not in url and ".js" not in url:
-                all_urls.append(url)
+        if ".m3u8" not in url:
+            return
+        # Filter: actual live video stream (cdndirector domain)
+        if "cdndirector" in url and "/live/" in url:
+            live_urls.append(url)
+            print(f"🎯 LIVE m3u8: {url[:100]}", flush=True)
+        else:
+            other_urls.append(url)
 
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True)
@@ -37,12 +38,10 @@ def main():
 
         print(f"[*] Opening {PLAYER_URL}", flush=True)
         pg.goto(PLAYER_URL, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(3)
 
-        # Wait for page to load
-        time.sleep(5)
-
-        # Try clicking play button
-        for sel in ['[aria-label="Play"]', 'button[class*="play"]', '.play-button', 'video', '[data-testid="play"]']:
+        # Try clicking play
+        for sel in ['[aria-label="Play"]', 'button[class*="play"]', '.play-button', 'video']:
             try:
                 el = pg.query_selector(sel)
                 if el:
@@ -52,36 +51,31 @@ def main():
             except:
                 pass
 
-        # Also try JS play
+        # JS play fallback
         try:
-            pg.evaluate("""() => {
-                const v = document.querySelector('video');
-                if (v) { v.play().catch(()=>{}); return 'video found'; }
-                return 'no video';
-            }""")
+            pg.evaluate("() => { const v=document.querySelector('video'); if(v) v.play().catch(()=>{}); }")
         except:
             pass
 
-        # Wait for m3u8 to appear (up to 30s)
-        for i in range(30):
-            if m3u8_urls:
+        # Wait for live m3u8 (up to 45s)
+        for i in range(45):
+            if live_urls:
                 break
             time.sleep(1)
-            if i % 5 == 4:
-                print(f"[*] Waiting... ({i+1}s, {len(all_urls)} requests captured)", flush=True)
+            if i % 10 == 9:
+                print(f"[*] Waiting... ({i+1}s, live={len(live_urls)}, other={len(other_urls)})", flush=True)
 
         b.close()
 
-    if not m3u8_urls:
-        print("❌ No m3u8 URL captured")
-        if all_urls:
-            print(f"Captured {len(all_urls)} related URLs:")
-            for u in all_urls[:10]:
+    if not live_urls:
+        print("❌ No live m3u8 captured")
+        if other_urls:
+            print(f"Other m3u8 found ({len(other_urls)}):")
+            for u in other_urls[:5]:
                 print(f"  {u[:120]}")
         sys.exit(1)
 
-    # Use the first captured URL
-    url = m3u8_urls[0]
+    url = live_urls[0]
     print(f"✅ Resolved: {url[:80]}...")
 
     if github_env:
